@@ -1,0 +1,6 @@
+com.testplus.app.test.app-jetified-core-1.5.0-0 C:\Users\furkan\.gradle\caches\transforms-3\0985a3b682c42a77be00defae8a13b5a\transformed\jetified-core-1.5.0\res
+com.testplus.app.test.app-jetified-annotation-experimental-1.3.1-1 C:\Users\furkan\.gradle\caches\transforms-3\1a2f48b0f85f1e63ebcbf1a384ca5c8c\transformed\jetified-annotation-experimental-1.3.1\res
+com.testplus.app.test.app-androidTest-2 C:\androidStudioProjes\NewOpticScanner\newOpticScanner\app\build\generated\res\resValues\androidTest\debug
+com.testplus.app.test.app-mergeDebugAndroidTestResources-3 C:\androidStudioProjes\NewOpticScanner\newOpticScanner\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\merged.dir
+com.testplus.app.test.app-mergeDebugAndroidTestResources-4 C:\androidStudioProjes\NewOpticScanner\newOpticScanner\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\stripped.dir
+com.testplus.app.test.app-merged_res-5 C:\androidStudioProjes\NewOpticScanner\newOpticScanner\app\build\intermediates\merged_res\debugAndroidTest
