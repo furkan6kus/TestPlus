@@ -3,149 +3,810 @@ package com.testplus.app.utils;
 import android.graphics.Bitmap;
 import android.graphics.Matrix;
 import android.graphics.PointF;
+import android.util.Log;
 import com.testplus.app.database.entities.OptikFormAlan;
 import java.util.*;
 
 /**
- * Optik form okuma motoru.
- * Yöntem:
- *  1. Görseldeki 4 köşe siyah kare (registration marker) tespit edilir.
- *  2. PDF point koordinatlarından bitmap pixel uzayına perspektif (homografi) matrisi kurulur.
- *  3. Her bubble merkezinin gerçek konumu hesaplanır, etrafında küçük bir alan örneklenir.
- *  4. Bubble içinde küçük arama yapılır (kayma toleransı).
- *  5. Bir sorudaki en koyu şık seçilir; eşiğin altında ise işaretsiz bırakılır.
+ * Optik form okuma motoru — birleştirilmiş sürüm.
+ * Aşamalar:
+ *   1. Görselde KAĞIDIN sınırlarını bul (parlak satır/sütun histogramı).
+ *      → Kot, masa, gölge gibi koyu zeminler kağıdın dışında kalır.
+ *   2. Kağıt içinde "white point" hesapla — loş fotoğrafları normalize eder.
+ *   3. Sadece kağıt içinde, 4 köşedeki siyah kareleri ara
+ *      (boyut sınırlaması: ne çok küçük ne çok büyük dark blob).
+ *   4. Köşeler "makul dikdörtgen" oluşturuyorsa homografi kur,
+ *      yoksa kağıt-sınırlı lineer ölçeğe düş.
+ *   5. Hem cevap alanları hem de bilgi alanları (Ad Soyad / Sınıf / Kitapçık)
+ *      için her bubble'da en koyu vs ikinci en koyu karşılaştırması yap.
  */
 public class OmrProcessor {
 
-    // Bir pixelin "koyu" sayılması için maksimum parlaklık (0=siyah, 255=beyaz).
-    // Daire kenarı kırmızı (~108) bunun üstünde olduğu için işaret olarak sayılmaz.
-    private static final int DARK_PIXEL_THRESHOLD = 90;
-    // Bir bubble'ın işaretli sayılması için içindeki koyu pixel oranı (0..1).
-    // Küçük/zayıf işaretleri de yakalayabilmek için düşük tutuldu.
-    private static final float MIN_FILL_RATIO = 0.12f;
-    // En koyu şık ile ikinci arasındaki minimum oran farkı (gürültüye karşı).
-    private static final float MIN_FILL_LEAD = 0.06f;
-    // Bu orandan yüksekse şıklar arası fark aranmaz (kesinlikle işaretli).
-    private static final float CERTAIN_FILL_RATIO = 0.30f;
+    /** Tüm OMR loglarını tek bir tag altında topluyoruz: logcat'te "OMR" filtresiyle bulun. */
+    private static final String TAG = "OMR";
 
+    /**
+     * Kağıt içi parlaklık yayılımı eşiği; üzerinde okuma iptali / canlı geri sayım durur.
+     * Hafif gölgelere tolerans için orta-yüksek tutulur (çok düşük değer sürekli yanlış pozitif üretirdi).
+     */
+    private static final float SHADOW_SPREAD_THRESHOLD = 0.158f;
+    private static final int SHADOW_GRID = 4;
+    /** Köşe marker ve kenar vignette için iç boşluk (kağıt genişliğinin yüzdesi). */
+    private static final float SHADOW_INSET_FRAC = 0.09f;
+
+    /**
+     * {@link #process(Bitmap, List, int, int, int)} sonucu: gölge nedeniyle iptal bilgisi için.
+     */
+    public static final class ProcessResult {
+        public final Map<Long, List<String>> answers;
+        /** true ise düzensiz aydınlatma / gölge — okuma güvenilir sayılmadı, {@link #answers} boş olabilir. */
+        public final boolean unevenIllumination;
+        /** 0..~1: kağıt içi grid/kadran parlaklık yayılımı (debug). */
+        public final float illuminationSpread;
+
+        ProcessResult(Map<Long, List<String>> answers, boolean unevenIllumination, float illuminationSpread) {
+            this.answers = answers;
+            this.unevenIllumination = unevenIllumination;
+            this.illuminationSpread = illuminationSpread;
+        }
+    }
+
+    // ─── Marker tespiti ─────────────────────────────────────────────────────
+    /**
+     * Köşe aramasında kullanılan sabit üst sınır (adaptif eşik bunun altında kalır).
+     * Gölgede kağıt ortalaması düştükçe yerel eşik {@link #findMarkerCenter} içinde düşer.
+     */
+    private static final int MARKER_DARK_THRESHOLD = 118;
+    /** Bir köşe arama bölgesinde olması gereken minimum koyu piksel (düşük çözünürlük önizleme için 11). */
+    private static final int MARKER_MIN_DARK_PIXELS = 11;
+    /** Bu sayıdan fazla koyu piksel varsa bunu marker SAYMAZ (kot/parmak/gölge).
+     *  Yüksek çözünürlüklü kameralar için 80K. */
+    private static final int MARKER_MAX_DARK_PIXELS = 80_000;
+
+    // ─── Kağıt tespiti ──────────────────────────────────────────────────────
+    /** Bir piksel "parlak" sayılması için min. parlaklık. Loş fotoğraflar için 155. */
+    private static final int PAPER_BRIGHT_THRESHOLD = 155;
+
+    // ─── Bubble seçimi (MCQ = 2–6 şık, LONG = 7+ şık / Ad Soyad) ─────────────
+    /**
+     * Örnekleme: bubble'ın büyük kısmının ortalama parlaklığı (harf mürekkebi
+     * yutulur). MCQ ve LONG için ayrı eşikler: ABC'de soluk kurşun küçük gap
+     * verir; 29 harfte harf baskısı bazen tek bir harfi çok koyu gösterir —
+     * LONG'ta gap ve mutlak karanlık biraz daha sıkı, median yedeği açık.
+     */
+    /** MCQ: ikinci şıktan min. parlaklık farkı (Türkçe ABC loglarında 0.04–0.12). */
+    private static final float MCQ_MIN_GAP = 0.065f;
+    /** MCQ: işaret bu parlaklığın altında olmalı (birincil kural). */
+    private static final float MCQ_ABS_MAX = 0.83f;
+    /** MCQ: median yedeği — satırdan ne kadar daha koyu. */
+    private static final float MCQ_MEDIAN_GAP = 0.048f;
+    private static final float MCQ_MEDIAN_MAX_BRIGHT = 0.86f;
+
+    /** LONG birincil: net şık ayrımı + mutlak karanlık. */
+    private static final float LONG_MIN_GAP = 0.15f;
+    private static final float LONG_ABS_MAX = 0.72f;
+    /** LONG: median yedeği — baskı gürültüsünde tek harf hafif koyu kalmasın (E/H yanlışları). */
+    private static final float LONG_MEDIAN_GAP = 0.13f;
+    /** LONG median: en koyu şık bundan parlak olmasın (dolu kurşun tipik &lt; 0.72). */
+    private static final float LONG_MEDIAN_MAX_BRIGHT = 0.735f;
+    /** LONG median ek güvenlik: 1. ile 2. şık arasında en az bu kadar fark olmalı. */
+    private static final float LONG_MEDIAN_MIN_PAIR_GAP = 0.082f;
+    /**
+     * LONG "yumuşak" kurtarma: soluk kurşunda gap 0.06–0.14 arasında kalır ama satır medyanına
+     * göre belirgin koyulaşma vardır (U sütunu logları). Birincil/median ikisi de düşerken
+     * stabil okuma sağlar; düz satırda (spread küçük) tetiklenmez.
+     */
+    private static final float LONG_SOFT_PAIR_GAP = 0.055f;
+    private static final float LONG_SOFT_MED_DELTA = 0.098f;
+    private static final float LONG_SOFT_MAX_BRIGHT = 0.77f;
+    private static final float LONG_SOFT_MIN_SPREAD = 0.052f;
+    /**
+     * "Çift-aday" belirsizliği: en koyu iki şık birbirine bu kadar yakın AND her ikisi de
+     * medianın altında belirgin oranda kalırsa (ikisi de işaret gibi görünüyor) — net karar
+     * verilemez, boş bırak. Yanlış harf okumaktansa boş bırakmak daha güvenli.
+     */
+    private static final float LONG_DOUBLE_MARK_GAP = 0.040f;
+    private static final float LONG_DOUBLE_MARK_MED_DELTA = 0.06f;
+
+    /** MCQ: tüm şıklar birbirine çok yakınsa (homografi kayması / örnek hatası) işaret yok say. */
+    private static final float MCQ_MIN_ROW_SPREAD = 0.038f;
+
+    /**
+     * @deprecated Yerine {@link #processWithDiagnostics(Bitmap, List, int, int, int)} kullanın;
+     *     gölge iptali için {@link ProcessResult} gerekir.
+     */
+    @Deprecated
     public static Map<Long, List<String>> process(Bitmap bitmap, List<OptikFormAlan> alanlar,
                                                   int pdfWidthPt, int pdfHeightPt,
                                                   int canvasWidthDp) {
+        return processWithDiagnostics(bitmap, alanlar, pdfWidthPt, pdfHeightPt, canvasWidthDp).answers;
+    }
+
+    public static ProcessResult processWithDiagnostics(Bitmap bitmap, List<OptikFormAlan> alanlar,
+                                                       int pdfWidthPt, int pdfHeightPt,
+                                                       int canvasWidthDp) {
         Map<Long, List<String>> result = new HashMap<>();
-        if (bitmap == null || alanlar == null || alanlar.isEmpty()) return result;
+        if (bitmap == null || alanlar == null || alanlar.isEmpty()) {
+            Log.w(TAG, "process: bitmap=" + (bitmap == null ? "null" : "ok")
+                + " alanlar=" + (alanlar == null ? "null" : "size=" + alanlar.size()));
+            return new ProcessResult(result, false, 0f);
+        }
 
         int imgW = bitmap.getWidth();
         int imgH = bitmap.getHeight();
+        Log.i(TAG, "═══════ OMR.process BAŞLADI ═══════");
+        Log.i(TAG, "Bitmap: " + imgW + "x" + imgH
+            + " | PDF beklenen: " + pdfWidthPt + "x" + pdfHeightPt + "pt"
+            + " | canvasWidth: " + canvasWidthDp + "dp"
+            + " | alan sayısı: " + alanlar.size());
+
         int[] pixels = new int[imgW * imgH];
         bitmap.getPixels(pixels, 0, imgW, 0, 0, imgW, imgH);
 
-        // PDF point uzayındaki marker merkezleri
-        float[][] pdfMarkerCenters = PdfGenerator.getMarkerCentersPt(pdfWidthPt, pdfHeightPt);
+        // ── Adım 1: kağıdın bounding box'ını bul ────────────────────────────
+        int[] paper = detectPaperBounds(pixels, imgW, imgH);
+        int pl = paper[0], ptop = paper[1], pr = paper[2], pb = paper[3];
+        int paperW = pr - pl;
+        int paperH = pb - ptop;
+        boolean paperFallback = false;
+        if (paperW < imgW / 4 || paperH < imgH / 4) {
+            // Kağıt tespiti güvenilmez → tüm görüntüyü kullan
+            pl = 0; ptop = 0; pr = imgW; pb = imgH;
+            paperW = imgW; paperH = imgH;
+            paperFallback = true;
+        } else {
+            // Üst/alt kenar bazen tüm satırı "parlak" sanıp y=0 veya y=max'a yapışır;
+            // köşe marker araması görüntü dışı / sandalye pikseli içerir → homografi uçar.
+            int insetY = Math.max(6, imgH / 40);
+            int insetX = Math.max(6, imgW / 40);
+            if (paperH > imgH * 0.72f && ptop < insetY) {
+                ptop = insetY;
+                paperH = pb - ptop;
+                Log.w(TAG, "[1/6] Üst kenar inset: kağıt üstü görüntüye yapışmış olabilir, +" + insetY + " px");
+            }
+            if (paperH > imgH * 0.72f && pb > imgH - insetY) {
+                pb = imgH - insetY;
+                paperH = pb - ptop;
+                Log.w(TAG, "[1/6] Alt kenar inset: alt kenar yapışmış olabilir, -" + insetY + " px");
+            }
+            if (paperW > imgW * 0.72f && pl < insetX) {
+                pl = insetX;
+                paperW = pr - pl;
+            }
+            if (paperW > imgW * 0.72f && pr > imgW - insetX) {
+                pr = imgW - insetX;
+                paperW = pr - pl;
+            }
+            if (pr <= pl + 50 || pb <= ptop + 50) {
+                pl = paper[0]; ptop = paper[1]; pr = paper[2]; pb = paper[3];
+                paperW = pr - pl;
+                paperH = pb - ptop;
+                Log.w(TAG, "[1/6] Inset kağıdı çok küçülttü — orijinal sınıra dönüldü");
+            }
+        }
+        Log.i(TAG, "[1/6] Kağıt sınırı: x=" + pl + ".." + pr + " (w=" + paperW + ")"
+            + ", y=" + ptop + ".." + pb + " (h=" + paperH + ")"
+            + (paperFallback ? "  ← ZAYIF tespit, tüm görüntü kullanılıyor"
+                              : "  ← güvenilir"));
 
-        // Görseldeki marker merkezleri (yoksa null)
-        PointF[] imgCorners = detectCorners(pixels, imgW, imgH, pdfWidthPt, pdfHeightPt);
-
-        // PDF -> Görsel dönüşümü
-        Matrix pdfToImg = new Matrix();
-        boolean haveHomography = false;
-        if (imgCorners != null) {
-            float[] src = {
-                pdfMarkerCenters[0][0], pdfMarkerCenters[0][1],
-                pdfMarkerCenters[1][0], pdfMarkerCenters[1][1],
-                pdfMarkerCenters[2][0], pdfMarkerCenters[2][1],
-                pdfMarkerCenters[3][0], pdfMarkerCenters[3][1]
-            };
-            float[] dst = {
-                imgCorners[0].x, imgCorners[0].y,
-                imgCorners[1].x, imgCorners[1].y,
-                imgCorners[2].x, imgCorners[2].y,
-                imgCorners[3].x, imgCorners[3].y
-            };
-            haveHomography = pdfToImg.setPolyToPoly(src, 0, dst, 0, 4);
+        float illuminationSpread = 0f;
+        // Tek renkli beyaz nokta ölçümü yerel gölgeleri görmez; kağıt içi parlaklık yayılımını ölç.
+        if (!paperFallback) {
+            illuminationSpread = computePaperIlluminationSpread(pixels, imgW, imgH,
+                pl, ptop, pr, pb);
+            Log.i(TAG, "[1.5/6] Aydınlatma düzgünlüğü: spread="
+                + String.format(Locale.US, "%.3f", illuminationSpread)
+                + " (eşik " + String.format(Locale.US, "%.3f", SHADOW_SPREAD_THRESHOLD)
+                + " üzeri → güçlü gölge / tek yönlü ışık)");
+            if (illuminationSpread >= SHADOW_SPREAD_THRESHOLD) {
+                Log.w(TAG, "  → Okuma iptal: kağıt üzerinde belirgin gölge veya çok düzensiz ışık.");
+                return new ProcessResult(new HashMap<Long, List<String>>(), true, illuminationSpread);
+            }
         }
 
-        if (!haveHomography) {
-            // Fallback: lineer ölçek (markerlar bulunmazsa)
-            pdfToImg.reset();
-            pdfToImg.setScale((float) imgW / pdfWidthPt, (float) imgH / pdfHeightPt);
-        }
+        // ── Adım 2: aydınlatma için "white point" referansı ─────────────────
+        // Loş fotoğrafta kağıt ~0.75-0.85 olabilir, 1.0 değil. Bu referansa
+        // bölerek mutlak eşiklerin pozlamadan bağımsız çalışmasını sağlarız.
+        float whitePoint = estimateWhitePoint(pixels, imgW, imgH, pl, ptop, pr, pb);
+        Log.i(TAG, "[2/6] White-point: " + String.format(Locale.US, "%.3f", whitePoint)
+            + " (1.0=ideal beyaz, <0.7=fotoğraf çok karanlık)");
 
-        // dp -> pt ölçek (form için)
+        // ── Adım 3: marker'ları SADECE kağıt içinde ara ─────────────────────
+        // Köşe arama bölgesi kağıdın ~%16'sı (eğri kamera açısına biraz pay).
+        int sw = Math.max(40, paperW / 6);
+        int sh = Math.max(40, paperH / 6);
+        // Marker fiziksel boyutu: PDF'te 18pt, kağıt genişliği orantılı → piksel beklenti.
+        // Bunu kullanarak gölge / sayfa kenarı / parmak gibi büyük lekeleri eler.
+        int expectedMarkerPx = Math.max(8, Math.round(paperW * (PdfGenerator.MARKER_PT / (float) pdfWidthPt)));
+        PointF tlImg = findMarkerCenter(pixels, imgW, imgH, pl,         ptop,         pl + sw,   ptop + sh, expectedMarkerPx);
+        PointF trImg = findMarkerCenter(pixels, imgW, imgH, pr - sw,    ptop,         pr,        ptop + sh, expectedMarkerPx);
+        PointF blImg = findMarkerCenter(pixels, imgW, imgH, pl,         pb - sh,      pl + sw,   pb,        expectedMarkerPx);
+        PointF brImg = findMarkerCenter(pixels, imgW, imgH, pr - sw,    pb - sh,      pr,        pb,        expectedMarkerPx);
+        int found = (tlImg != null ? 1 : 0) + (trImg != null ? 1 : 0)
+                  + (blImg != null ? 1 : 0) + (brImg != null ? 1 : 0);
+        Log.i(TAG, "[3/6] Köşe arama bölgesi: " + sw + "x" + sh + " px"
+            + " | bulunan: " + found + "/4");
+        Log.i(TAG, "      TL=" + fmtPt(tlImg) + "  TR=" + fmtPt(trImg)
+            + "  BL=" + fmtPt(blImg) + "  BR=" + fmtPt(brImg));
+
+        // ── Adım 4: homografi kur (eğer 4 köşe makul dikdörtgen oluşturuyorsa) ─
+        float mc = PdfGenerator.MARKER_PADDING_PT + PdfGenerator.MARKER_PT / 2f;
+        float[] pdfCorners = {
+            mc,                       mc,
+            pdfWidthPt - mc,          mc,
+            mc,                       pdfHeightPt - mc,
+            pdfWidthPt - mc,          pdfHeightPt - mc
+        };
+        Matrix homography = new Matrix();
+        boolean perspectiveOk = false;
+        boolean quadOk = false;
+        if (tlImg != null && trImg != null && blImg != null && brImg != null) {
+            float[] imgCorners = {
+                tlImg.x, tlImg.y,
+                trImg.x, trImg.y,
+                blImg.x, blImg.y,
+                brImg.x, brImg.y
+            };
+            quadOk = isReasonableQuad(imgCorners, paperW, paperH);
+            if (quadOk) {
+                perspectiveOk = homography.setPolyToPoly(pdfCorners, 0, imgCorners, 0, 4);
+            }
+        }
+        Log.i(TAG, "[4/6] Homografi: 4köşe=" + (found == 4 ? "EVET" : "HAYIR(" + found + ")")
+            + " | makulDikdörtgen=" + (quadOk ? "EVET" : "HAYIR")
+            + " | perspektifOK=" + perspectiveOk
+            + (perspectiveOk ? "" : "  ← LİNEER FALLBACK kullanılıyor (KAYBOLAN DOĞRULUK)"));
+
+        // ── Adım 5: piksel/pt ölçeği ve örnekleme yarıçapı ──────────────────
+        float pdfSpanH = pdfWidthPt - 2f * mc;
+        float ptToPx = (float) paperW / pdfWidthPt;
+        if (perspectiveOk && tlImg != null && trImg != null && pdfSpanH > 0f) {
+            float dx = trImg.x - tlImg.x, dy = trImg.y - tlImg.y;
+            float pxSpan = (float) Math.sqrt(dx * dx + dy * dy);
+            if (pxSpan > 0f) ptToPx = pxSpan / pdfSpanH;
+        }
+        // Bubble yarıçapı PdfGenerator'da cs * 0.38 ≈ 10.64pt; merkezler arası 28pt.
+        // sample = 0.27 (bubble içi ~yarısı) → harf "yutulur", dolu mark dominant olur.
+        //   Daha küçük tutmak dolu işaretin parlaklığa katkısını artırır (boş 0.90 vs dolu 0.40 ayrımı korunur).
+        // search = 0.16 → ~7px @ ptToPx=1.5: küçük homografi/marker kaymalarını telafi eder.
+        //   Bubble merkezleri 28pt × ptToPx ≈ 42px aralıklı; 7px arama komşu bubble'a girmez.
+        int sampleRadius = Math.max(4, Math.round(28f * ptToPx * 0.27f));
+        int searchRadius = Math.max(2, Math.round(28f * ptToPx * 0.16f));
+        Log.i(TAG, "[5/6] ptToPx=" + String.format(Locale.US, "%.3f", ptToPx)
+            + " | sampleR=" + sampleRadius + "px"
+            + " | searchR=" + searchRadius + "px"
+            + " (bubble yarıçapı ≈ " + Math.round(10.64f * ptToPx) + "px)");
+
         float pdfScale = (float) pdfWidthPt / canvasWidthDp;
+        final int finalPl = pl, finalPtop = ptop;
+        final int finalPaperW = paperW, finalPaperH = paperH;
+        final boolean finalPersp = perspectiveOk;
 
-        // Bubble yarıçapını görsel pixelinde tahmin et
-        // (PdfGenerator'daki cs = 28 * pdfScale, daire yarıçapı cs * 0.38)
-        float bubbleRadiusPt = 28f * pdfScale * 0.38f;
-        float bubbleRadiusImg = mapDistance(pdfToImg, bubbleRadiusPt);
-
-        // Sample radius bubble'ın çoğunu kapsasın; küçük işaretleri kaçırmamak için.
-        int sampleRadius = Math.max(3, Math.round(bubbleRadiusImg * 0.85f));
-        // Arama adımı: işaret merkez dışında olabilir, etrafa biraz kayma toleransı.
-        int searchStep = Math.max(1, Math.round(bubbleRadiusImg * 0.30f));
-
+        // ── Adım 6: tüm alanlar (cevap + bilgi) için bubble okuma ───────────
+        Log.i(TAG, "[6/6] Eşikler — MCQ(≤6 şık): gap≥" + MCQ_MIN_GAP + " min<" + MCQ_ABS_MAX
+            + " | medYedek: Δmed≥" + MCQ_MEDIAN_GAP + " min<" + MCQ_MEDIAN_MAX_BRIGHT
+            + " | satırSpread≥" + MCQ_MIN_ROW_SPREAD
+            + " || LONG(7+): gap≥" + LONG_MIN_GAP + " min<" + LONG_ABS_MAX
+            + " | medYedek: Δmed≥" + LONG_MEDIAN_GAP + " min<" + LONG_MEDIAN_MAX_BRIGHT
+            + " gap≥" + LONG_MEDIAN_MIN_PAIR_GAP
+            + " | soft: gap∈[" + LONG_SOFT_PAIR_GAP + ".." + LONG_MIN_GAP + ") Δmed≥" + LONG_SOFT_MED_DELTA
+            + " spr≥" + LONG_SOFT_MIN_SPREAD
+            + " | 2x✗: gap<" + LONG_DOUBLE_MARK_GAP + " & Δmed(2.)≥" + LONG_DOUBLE_MARK_MED_DELTA + ")");
         for (OptikFormAlan alan : alanlar) {
             String desen = alan.desen != null ? alan.desen : "ABCD";
             char[] opts = desen.toCharArray();
             int perBlock = alan.bloktakiVeriSayisi > 0 ? alan.bloktakiVeriSayisi : 5;
-            int blocks = alan.blokSayisi > 0 ? alan.blokSayisi : 1;
-            int totalQ = perBlock * blocks;
+            int blocks   = alan.blokSayisi > 0        ? alan.blokSayisi          : 1;
+            int totalQ   = perBlock * blocks;
+            Log.i(TAG, "  ─ Alan #" + alan.id + " '" + alan.etiket
+                + "' tur=" + alan.tur + " desen=" + desen
+                + " soru=" + totalQ + "(" + blocks + "x" + perBlock + ")");
 
+            int markedCount = 0;
+            StringBuilder firstSamples = new StringBuilder();
             List<String> answers = new ArrayList<>();
             for (int q = 0; q < totalQ; q++) {
-                int bestIdx = -1;
-                float bestRatio = 0f;
-                float secondRatio = 0f;
-
-                for (int o = 0; o < opts.length; o++) {
-                    float[] center = PdfGenerator.getBubbleCenter(alan, q, o, pdfScale);
-                    float[] pt = {center[0], center[1]};
-                    pdfToImg.mapPoints(pt);
-                    int bx = Math.round(pt[0]);
-                    int by = Math.round(pt[1]);
-
-                    // Bubble içindeki koyu pixel oranını hesapla.
-                    // Hedef noktada ve etrafında ufak grid taraması yap (kayma toleransı:
-                    // işaret bubble merkezinden biraz kaymış olabilir; en koyu konumu seç).
-                    float ratio = darkRatio(pixels, bx, by, sampleRadius, imgW, imgH);
-                    for (int dy = -searchStep; dy <= searchStep; dy += searchStep) {
-                        for (int dx = -searchStep; dx <= searchStep; dx += searchStep) {
-                            if (dx == 0 && dy == 0) continue;
-                            float r = darkRatio(pixels, bx + dx, by + dy,
-                                                sampleRadius, imgW, imgH);
-                            if (r > ratio) ratio = r;
-                        }
-                    }
-
-                    if (ratio > bestRatio) {
-                        secondRatio = bestRatio;
-                        bestRatio = ratio;
-                        bestIdx = o;
-                    } else if (ratio > secondRatio) {
-                        secondRatio = ratio;
-                    }
+                boolean longRow = opts.length > 6;
+                // Ad Soyad (29 harf): örnek biraz daha geniş + arama +2..3 px — soluk işaret ve
+                // homografi titreşiminde gap artar; komşu sütun ~42 px uzakta güvenli.
+                int effSampleR = sampleRadius;
+                int effSearchR = searchRadius;
+                if (longRow) {
+                    effSampleR = Math.min(sampleRadius + 1, 15);
+                    effSearchR = Math.min(searchRadius + 3, 11);
                 }
 
-                String selected = "";
-                if (bestIdx >= 0) {
-                    boolean kesin = bestRatio >= CERTAIN_FILL_RATIO;
-                    boolean lider = bestRatio >= MIN_FILL_RATIO
-                            && (bestRatio - secondRatio) >= MIN_FILL_LEAD;
-                    if (kesin || lider) {
-                        selected = String.valueOf(opts[bestIdx]);
+                float[] brightnesses = new float[opts.length];
+                for (int o = 0; o < opts.length; o++) {
+                    float[] pdfPt = PdfGenerator.getBubbleCenter(alan, q, o, pdfScale);
+                    float ix, iy;
+                    if (finalPersp) {
+                        float[] pt = {pdfPt[0], pdfPt[1]};
+                        homography.mapPoints(pt);
+                        ix = pt[0]; iy = pt[1];
+                    } else {
+                        // Fallback: kağıt-sınırlı lineer ölçek
+                        ix = finalPl + pdfPt[0] * finalPaperW / pdfWidthPt;
+                        iy = finalPtop + pdfPt[1] * finalPaperH / pdfHeightPt;
                     }
+                    // Bubble merkezi etrafında küçük bir gridde her noktada
+                    // BÜYÜK bir dairesel bölgenin ORTALAMA parlaklığını al;
+                    // aday noktalardan en koyu (ortalama olarak) olanı seç.
+                    // Bu yaklaşım dairenin İÇİNDEKİ HARFİ "yutar" çünkü harf
+                    // toplam alanın çok küçük bir oranıdır → boş daire ~0.90,
+                    // dolu daire ~0.40 → 0.50'lik net ayrım.
+                    float raw = sampleAverageNearby(pixels,
+                        Math.round(ix), Math.round(iy),
+                        effSampleR, effSearchR, imgW, imgH);
+                    // White-point normalize: loş fotoğrafta tüm okumaların eşik
+                    // altına kaymasını engeller.
+                    brightnesses[o] = raw / whitePoint;
+                }
+
+                // En koyu ve İKİNCİ EN KOYU şıkları bul.
+                // Bu, ortalama vs minimum'dan çok daha sağlam:
+                // gri baskıda renk hep birlikte kayar, ortalama küçük gözükür.
+                float minBr = Float.MAX_VALUE, secondMinBr = Float.MAX_VALUE;
+                int darkestIdx = 0;
+                for (int o = 0; o < opts.length; o++) {
+                    if (brightnesses[o] < minBr) {
+                        secondMinBr = minBr;
+                        minBr = brightnesses[o];
+                        darkestIdx = o;
+                    } else if (brightnesses[o] < secondMinBr) {
+                        secondMinBr = brightnesses[o];
+                    }
+                }
+                if (opts.length == 1) secondMinBr = 1f; // tek-şık edge case
+
+                float maxBr = Float.MIN_VALUE;
+                for (int o = 0; o < opts.length; o++) {
+                    if (brightnesses[o] > maxBr) maxBr = brightnesses[o];
+                }
+                float rowSpread = maxBr - minBr;
+
+                // İşaretli kabul: MCQ (≤6 şık) ve LONG (7+, Ad Soyad) ayrı eşikler
+                String selected = "";
+                float gap = secondMinBr - minBr;
+                float rowMedian = medianBrightness(brightnesses);
+
+                boolean isMcq = opts.length <= 6;
+                /** ABC satırında üç şık da aynı parlaklığa yakınsa = örnek kağıt dışında / homografi çöktü — seçme. */
+                boolean mcqAmbiguous = isMcq && opts.length >= 2
+                    && rowSpread < MCQ_MIN_ROW_SPREAD;
+
+                float reqGap = isMcq ? MCQ_MIN_GAP : LONG_MIN_GAP;
+                float reqAbs = isMcq ? MCQ_ABS_MAX : LONG_ABS_MAX;
+                boolean gapOk = gap >= reqGap;
+                boolean darkOk = minBr < reqAbs;
+                boolean primaryOk = gapOk && darkOk && !mcqAmbiguous;
+
+                boolean medianOk;
+                if (mcqAmbiguous) {
+                    medianOk = false;
+                } else if (isMcq) {
+                    medianOk = opts.length >= 2
+                        && (rowMedian - minBr) >= MCQ_MEDIAN_GAP
+                        && minBr < MCQ_MEDIAN_MAX_BRIGHT;
+                } else {
+                    medianOk = gap >= LONG_MEDIAN_MIN_PAIR_GAP
+                        && (rowMedian - minBr) >= LONG_MEDIAN_GAP
+                        && minBr < LONG_MEDIAN_MAX_BRIGHT;
+                }
+
+                boolean longSoftOk = !isMcq && !mcqAmbiguous
+                    && gap >= LONG_SOFT_PAIR_GAP && gap < LONG_MIN_GAP
+                    && (rowMedian - minBr) >= LONG_SOFT_MED_DELTA
+                    && minBr < LONG_SOFT_MAX_BRIGHT
+                    && rowSpread >= LONG_SOFT_MIN_SPREAD;
+
+                // LONG: iki şık çok yakın ve ikisi de medianın belirgin altında kalırsa
+                // (R≈U gibi durum) hangisinin gerçek mark olduğunu söyleyemeyiz → boş.
+                boolean longDoubleMark = !isMcq && opts.length >= 3
+                    && gap < LONG_DOUBLE_MARK_GAP
+                    && (rowMedian - secondMinBr) >= LONG_DOUBLE_MARK_MED_DELTA;
+
+                String ruleTag = "";
+                if (longDoubleMark) {
+                    ruleTag = " [long-2x✗]";
+                } else if (primaryOk) {
+                    ruleTag = isMcq ? " [mcq-1°]" : " [long-1°]";
+                } else if (medianOk) {
+                    ruleTag = isMcq ? " [mcq-med]" : " [long-med]";
+                } else if (longSoftOk) {
+                    ruleTag = " [long-soft]";
+                }
+
+                if (!longDoubleMark && (primaryOk || medianOk || longSoftOk)) {
+                    selected = String.valueOf(opts[darkestIdx]);
+                    markedCount++;
                 }
                 answers.add(selected);
+
+                // İlk 3 sorunun detaylı logu — soru-bazında debug için
+                if (q < 3) {
+                    StringBuilder b = new StringBuilder();
+                    b.append("    Q").append(q + 1).append(": ");
+                    for (int o = 0; o < opts.length; o++) {
+                        b.append(opts[o]).append('=')
+                         .append(String.format(Locale.US, "%.2f", brightnesses[o]))
+                         .append(' ');
+                    }
+                    b.append("→ darkest=").append(opts[darkestIdx])
+                     .append(" gap=").append(String.format(Locale.US, "%.2f", gap))
+                     .append(gapOk ? "✓" : "✗").append('/').append(String.format(Locale.US, "%.2f", reqGap))
+                     .append(" min=").append(String.format(Locale.US, "%.2f", minBr))
+                     .append(darkOk ? "✓" : "✗").append('/').append(String.format(Locale.US, "%.2f", reqAbs))
+                     .append(" spr=").append(String.format(Locale.US, "%.2f", rowSpread))
+                     .append(mcqAmbiguous ? " AMB✗" : "")
+                     .append(" med=").append(String.format(Locale.US, "%.2f", rowMedian))
+                     .append(medianOk ? " med✓" : " med✗")
+                     .append(longSoftOk ? " soft✓" : "")
+                     .append(ruleTag.isEmpty() ? "" : ruleTag)
+                     .append(" → ").append(selected.isEmpty() ? "(boş)" : selected);
+                    if (firstSamples.length() > 0) firstSamples.append('\n');
+                    firstSamples.append(b);
+                }
             }
+            Log.i(TAG, "    Sonuç: " + markedCount + "/" + totalQ + " soru işaretli\n"
+                + firstSamples.toString());
             result.put(alan.id, answers);
         }
-        return result;
+        Log.i(TAG, "═══════ OMR.process BİTTİ ═══════");
+        return new ProcessResult(result, false, illuminationSpread);
     }
 
-    /** Dairesel bir alanda parlaklığı eşik altında olan pixel oranını [0..1] döndürür. */
-    private static float darkRatio(int[] pixels, int cx, int cy, int radius,
-                                   int imgW, int imgH) {
-        int dark = 0;
+    /** PointF'i kompakt formatta yazdır (debug için). */
+    private static String fmtPt(PointF p) {
+        return p == null ? "null" : "(" + Math.round(p.x) + "," + Math.round(p.y) + ")";
+    }
+
+    /** Şık parlaklıklarının median'ı [0..1]; ABC/ABCD satırında göreli karanlık için. */
+    private static float medianBrightness(float[] v) {
+        int n = v.length;
+        if (n == 0) return 1f;
+        float[] c = Arrays.copyOf(v, n);
+        Arrays.sort(c);
+        if ((n & 1) == 1) return c[n / 2];
+        return (c[n / 2 - 1] + c[n / 2]) * 0.5f;
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //                              YARDIMCI METODLAR
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Kağıt içi (köşe markerları hariç tutulmuş) parlaklık homojenliği ölçümü.
+     * Ortalama Luma [0..1] üzerinden max−min: güçlü gölge veya tek yönlü ışık yüksek spread verir.
+     */
+    private static float computePaperIlluminationSpread(int[] pixels, int imgW, int imgH,
+                                                        int pl, int ptop, int pr, int pb) {
+        int pw = pr - pl, ph = pb - ptop;
+        int insetX = Math.max(12, Math.round(pw * SHADOW_INSET_FRAC));
+        int insetY = Math.max(12, Math.round(ph * SHADOW_INSET_FRAC));
+        int il = pl + insetX, it = ptop + insetY, ir = pr - insetX, ib = pb - insetY;
+        if (ir <= il + 30 || ib <= it + 30) return 0f;
+
+        float gridSpread = gridMeanLumaSpread(pixels, imgW, imgH, il, it, ir, ib,
+            SHADOW_GRID, SHADOW_GRID);
+        float quadSpread = quadrantMeanLumaSpread(pixels, imgW, imgH, il, it, ir, ib);
+        return Math.max(gridSpread, quadSpread);
+    }
+
+    /** Düzgün ızgarada her hücrenin ortalama Luma'sı; en parlak vs en koyu hücre farkı. */
+    private static float gridMeanLumaSpread(int[] pixels, int imgW, int imgH,
+            int il, int it, int ir, int ib, int cols, int rows) {
+        float minM = 1f, maxM = 0f;
+        int innerW = ir - il, innerH = ib - it;
+        int cellW = innerW / cols;
+        int cellH = innerH / rows;
+        if (cellW < 4 || cellH < 4) return 0f;
+
+        for (int cy = 0; cy < rows; cy++) {
+            for (int cx = 0; cx < cols; cx++) {
+                int x0 = il + cx * cellW;
+                int y0 = it + cy * cellH;
+                int x1 = (cx == cols - 1) ? ir : il + (cx + 1) * cellW;
+                int y1 = (cy == rows - 1) ? ib : it + (cy + 1) * cellH;
+                float m = meanNormalizedLuma(pixels, imgW, imgH, x0, y0, x1, y1);
+                if (m < minM) minM = m;
+                if (m > maxM) maxM = m;
+            }
+        }
+        return maxM - minM;
+    }
+
+    /** Dört büyük kadranın (2×2) ortalama parlaklık yayılımı — tek köşe gölgelerinde güçlü sinyal. */
+    private static float quadrantMeanLumaSpread(int[] pixels, int imgW, int imgH,
+            int il, int it, int ir, int ib) {
+        int midX = (il + ir) / 2;
+        int midY = (it + ib) / 2;
+        float q00 = meanNormalizedLuma(pixels, imgW, imgH, il, it, midX, midY);
+        float q10 = meanNormalizedLuma(pixels, imgW, imgH, midX, it, ir, midY);
+        float q01 = meanNormalizedLuma(pixels, imgW, imgH, il, midY, midX, ib);
+        float q11 = meanNormalizedLuma(pixels, imgW, imgH, midX, midY, ir, ib);
+        float minQ = Math.min(Math.min(q00, q10), Math.min(q01, q11));
+        float maxQ = Math.max(Math.max(q00, q10), Math.max(q01, q11));
+        return maxQ - minQ;
+    }
+
+    private static float meanNormalizedLuma(int[] pixels, int imgW, int imgH,
+            int x0, int y0, int x1, int y1) {
+        int step = Math.max(1, Math.min(x1 - x0, y1 - y0) / 14);
+        long sum = 0;
+        int cnt = 0;
+        for (int y = y0; y < y1 && y < imgH; y += step) {
+            int rowBase = y * imgW;
+            for (int x = x0; x < x1 && x < imgW; x += step) {
+                int p = pixels[rowBase + x];
+                int lum = ((p >> 16 & 0xFF) * 299
+                         + (p >>  8 & 0xFF) * 587
+                         + (p       & 0xFF) * 114) / 1000;
+                sum += lum;
+                cnt++;
+            }
+        }
+        if (cnt == 0) return 0.5f;
+        return (sum / (float) cnt) / 255f;
+    }
+
+    /**
+     * Kağıt bölgesinin "white point" referansını tahmin eder — en parlak %5
+     * piksellerin ortalama parlaklığı. Loş/gölgeli fotoğraflarda kağıt
+     * 0.75-0.85 arası görünür; bu referansa bölmek mutlak eşiklerin pozlamadan
+     * bağımsız çalışmasını sağlar.
+     */
+    private static float estimateWhitePoint(int[] pixels, int imgW, int imgH,
+                                             int pl, int ptop, int pr, int pb) {
+        int step = Math.max(1, Math.min(pr - pl, pb - ptop) / 150);
+        int[] hist = new int[256];
         int total = 0;
+        for (int y = ptop; y < pb && y < imgH; y += step) {
+            int rowBase = y * imgW;
+            for (int x = pl; x < pr && x < imgW; x += step) {
+                int p = pixels[rowBase + x];
+                int lum = ((p >> 16 & 0xFF) * 299
+                         + (p >>  8 & 0xFF) * 587
+                         + (p       & 0xFF) * 114) / 1000;
+                hist[lum]++;
+                total++;
+            }
+        }
+        if (total == 0) return 1f;
+        // Üst %5'lik parlaklık dilimini bul → "white" referansı
+        int target = Math.max(1, total / 20);
+        int cum = 0;
+        for (int i = 255; i >= 0; i--) {
+            cum += hist[i];
+            if (cum >= target) {
+                // Aşırı amplifikasyonu engelle: kağıt en az %50 parlak olmalı
+                return Math.max(0.50f, i / 255f);
+            }
+        }
+        return 1f;
+    }
+
+    /**
+     * Kağıdın bounding box'ını bulur — parlak satır/sütun histogramları kullanır.
+     * Koyu zemin (kot, masa) etrafında olsa bile kağıt izole edilir.
+     */
+    private static int[] detectPaperBounds(int[] pixels, int imgW, int imgH) {
+        int step = Math.max(1, Math.min(imgW, imgH) / 250);
+        int[] rowBright = new int[imgH];
+        int[] colBright = new int[imgW];
+
+        for (int y = 0; y < imgH; y += step) {
+            int rc = 0;
+            int rowBase = y * imgW;
+            for (int x = 0; x < imgW; x += step) {
+                int p = pixels[rowBase + x];
+                int br = ((p >> 16 & 0xFF) * 299
+                        + (p >>  8 & 0xFF) * 587
+                        + (p       & 0xFF) * 114) / 1000;
+                if (br > PAPER_BRIGHT_THRESHOLD) {
+                    colBright[x]++;
+                    rc++;
+                }
+            }
+            rowBright[y] = rc;
+        }
+
+        int maxRow = 0, maxCol = 0;
+        for (int v : rowBright) if (v > maxRow) maxRow = v;
+        for (int v : colBright) if (v > maxCol) maxCol = v;
+
+        int rowThresh = Math.max(1, (int) (maxRow * 0.35f));
+        int colThresh = Math.max(1, (int) (maxCol * 0.35f));
+
+        int top = 0, bottom = imgH - 1, left = 0, right = imgW - 1;
+        while (top    < imgH - 1 && rowBright[top]    < rowThresh) top++;
+        while (bottom > 0        && rowBright[bottom] < rowThresh) bottom--;
+        while (left   < imgW - 1 && colBright[left]   < colThresh) left++;
+        while (right  > 0        && colBright[right]  < colThresh) right--;
+
+        if (top >= bottom || left >= right) {
+            return new int[]{0, 0, imgW, imgH};
+        }
+        // 2% genişlet — köşe markerları kağıt kenarına çok yakın
+        int padX = Math.max(2, (right - left) / 50);
+        int padY = Math.max(2, (bottom - top) / 50);
+        return new int[]{
+            Math.max(0, left - padX),
+            Math.max(0, top - padY),
+            Math.min(imgW, right + padX),
+            Math.min(imgH, bottom + padY)
+        };
+    }
+
+    /**
+     * Köşe arama dikdörtgeninde örneklenmiş ortalama luma (0–255) — adaptif marker eşiği için.
+     */
+    private static int meanLumaInRect(int[] pixels, int imgW, int imgH,
+            int x0, int y0, int x1, int y1, int step) {
+        long sum = 0;
+        int n = 0;
+        for (int y = y0; y < y1 && y < imgH; y += step) {
+            int rowBase = y * imgW;
+            for (int x = x0; x < x1 && x < imgW; x += step) {
+                int p = pixels[rowBase + x];
+                int br = ((p >> 16 & 0xFF) * 299
+                        + (p >>  8 & 0xFF) * 587
+                        + (p       & 0xFF) * 114) / 1000;
+                sum += br;
+                n++;
+            }
+        }
+        if (n == 0) return 150;
+        return (int) (sum / n);
+    }
+
+    /**
+     * Verilen dikdörtgendeki koyu piksel ağırlık merkezini döndürür.
+     *
+     * İki-aşamalı yaklaşım (kritik düzeltme):
+     *   Pass 1 — kabaca tüm bölgenin koyu piksel ağırlık merkezini bul.
+     *            Bu merkez genellikle gerçek marker'dan 30-65 px sayfa
+     *            ORTASINA doğru "kayar" çünkü kenar gölgeleri, kağıt
+     *            dokusu ve uzakta olan baskı (cevap kareleri vb.) hep
+     *            aynı ortalamaya katkı veriyor. Sonuç: tüm grid bir hücre
+     *            kadar kayıyor → bubble'lar sayı kolonu / boşluk
+     *            örnekleniyor → cevaplar rastgele görünüyor.
+     *
+     *   Pass 2 — kaba merkezin etrafında DAR pencere; eşik köşe bölgesi
+     *            ortalama luma'ya göre uyarlanır (gölge/parlama).
+     *
+     * Çok az/çok fazla koyu piksel varsa → null (marker güvenilir değil).
+     */
+    private static PointF findMarkerCenter(int[] pixels, int imgW, int imgH,
+                                            int x0, int y0, int x1, int y1,
+                                            int expectedMarkerPx) {
+        // Beklenen marker boyutu negatif/eski yola uyumluluk için 0 → kontrol kapalı
+        boolean useSizeCheck = expectedMarkerPx > 0;
+
+        // Köşe bölgesi ortalama parlaklığı — gölgede beyaz kağıt grileşir; sabit eşik marker'ı kaçırır.
+        int regionMean = meanLumaInRect(pixels, imgW, imgH, x0, y0, x1, y1, 4);
+        int pass1Thresh = Math.max(73, Math.min(MARKER_DARK_THRESHOLD + 24, regionMean - 32));
+        int strictDark = Math.max(60, Math.min(96, regionMean - 22));
+
+        // Pass 1: bölgenin tamamında koyu piksel merkezi + bbox.
+        long sumX = 0, sumY = 0, count = 0;
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+        for (int y = y0; y < y1 && y < imgH; y++) {
+            int rowBase = y * imgW;
+            for (int x = x0; x < x1 && x < imgW; x++) {
+                int p = pixels[rowBase + x];
+                int br = ((p >> 16 & 0xFF) * 299
+                        + (p >>  8 & 0xFF) * 587
+                        + (p       & 0xFF) * 114) / 1000;
+                if (br < pass1Thresh) {
+                    sumX += x; sumY += y; count++;
+                    if (x < minX) minX = x; if (x > maxX) maxX = x;
+                    if (y < minY) minY = y; if (y > maxY) maxY = y;
+                }
+            }
+        }
+        if (count < MARKER_MIN_DARK_PIXELS || count > MARKER_MAX_DARK_PIXELS) return null;
+        float roughCx = sumX / (float) count;
+        float roughCy = sumY / (float) count;
+        int blobW = maxX - minX;
+        int blobH = maxY - minY;
+
+        // Boyut sanity check: gerçek marker ±%70 toleransla beklenen boyutta olur.
+        // Gölge / kağıt kenarı / parmak çok daha geniş ya da çok elongated çıkar.
+        if (useSizeCheck) {
+            int maxAllowed = Math.round(expectedMarkerPx * 2.6f); // bol pay (eğik kamera için)
+            int sideMin = Math.max(blobW, blobH);
+            float aspectRatio = blobW > 0 && blobH > 0
+                ? Math.max(blobW, blobH) / (float) Math.min(blobW, blobH)
+                : 99f;
+            if (sideMin > maxAllowed || aspectRatio > 2.8f) {
+                // Pass 1 büyük gölgeye düştü — pass 2'de DAR bir pencerede en yoğun bölgeyi ara,
+                // başaramazsa null dön (marker güvenilir bulunamadı).
+                int searchR = Math.round(expectedMarkerPx * 1.2f);
+                int rx0s = Math.max(x0, (int) roughCx - searchR);
+                int rx1s = Math.min(x1, (int) roughCx + searchR);
+                int ry0s = Math.max(y0, (int) roughCy - searchR);
+                int ry1s = Math.min(y1, (int) roughCy + searchR);
+                long sx = 0, sy = 0, sc = 0;
+                for (int y = ry0s; y < ry1s && y < imgH; y++) {
+                    int rb = y * imgW;
+                    for (int x = rx0s; x < rx1s && x < imgW; x++) {
+                        int p = pixels[rb + x];
+                        int br = ((p >> 16 & 0xFF) * 299
+                                + (p >>  8 & 0xFF) * 587
+                                + (p       & 0xFF) * 114) / 1000;
+                        if (br < strictDark) {
+                            sx += x; sy += y; sc++;
+                        }
+                    }
+                }
+                if (sc < MARKER_MIN_DARK_PIXELS) return null;
+                roughCx = sx / (float) sc;
+                roughCy = sy / (float) sc;
+            }
+        }
+
+        // Pass 2: kaba merkezin etrafında dar pencere + sıkı eşik.
+        // Beklenen boyut biliniyorsa pencereyi marker boyutunun ~1.4 katına sıkıştır
+        // — uzak gölge bias'ı tamamen elenir.
+        int refineR = useSizeCheck
+            ? Math.round(expectedMarkerPx * 1.4f)
+            : Math.max(20, Math.min(x1 - x0, y1 - y0) / 4);
+        int rx0 = Math.max(x0, (int) roughCx - refineR);
+        int rx1 = Math.min(x1, (int) roughCx + refineR);
+        int ry0 = Math.max(y0, (int) roughCy - refineR);
+        int ry1 = Math.min(y1, (int) roughCy + refineR);
+
+        long sumX2 = 0, sumY2 = 0, count2 = 0;
+        for (int y = ry0; y < ry1 && y < imgH; y++) {
+            int rowBase = y * imgW;
+            for (int x = rx0; x < rx1 && x < imgW; x++) {
+                int p = pixels[rowBase + x];
+                int br = ((p >> 16 & 0xFF) * 299
+                        + (p >>  8 & 0xFF) * 587
+                        + (p       & 0xFF) * 114) / 1000;
+                if (br < strictDark) {
+                    sumX2 += x; sumY2 += y; count2++;
+                }
+            }
+        }
+        if (count2 < MARKER_MIN_DARK_PIXELS) {
+            // Pass 2 yeterli koyu piksel bulamadı → kaba merkezi kullan
+            return new PointF(roughCx, roughCy);
+        }
+        return new PointF(sumX2 / (float) count2, sumY2 / (float) count2);
+    }
+
+    /**
+     * Dört köşenin "makul dikdörtgen" oluşturduğunu doğrular.
+     * Sıra: TL, TR, BL, BR (her biri x,y → toplam 8 float).
+     */
+    private static boolean isReasonableQuad(float[] c, int paperW, int paperH) {
+        float tlx = c[0], tly = c[1];
+        float trx = c[2], try_ = c[3];
+        float blx = c[4], bly = c[5];
+        float brx = c[6], bry = c[7];
+
+        // TL sol-üst, TR sağ-üst, BL sol-alt, BR sağ-alt olmalı
+        if (trx <= tlx + 10 || brx <= blx + 10) return false;
+        if (bly <= tly + 10 || bry <= try_ + 10) return false;
+
+        // Quadrilateral kenarları kağıdın en az %40'ı kadar uzun olmalı
+        float topW = trx - tlx;
+        float botW = brx - blx;
+        float lefH = bly - tly;
+        float rigH = bry - try_;
+        if (topW < paperW * 0.4f || botW < paperW * 0.4f) return false;
+        if (lefH < paperH * 0.4f || rigH < paperH * 0.4f) return false;
+        return true;
+    }
+
+    /** Dairesel bir alanın normalize ortalama parlaklığı [0=siyah, 1=beyaz]. */
+    private static float sampleBrightness(int[] pixels, int cx, int cy, int radius,
+                                           int imgW, int imgH) {
+        long sum = 0;
+        int count = 0;
         int r2 = radius * radius;
         for (int dy = -radius; dy <= radius; dy++) {
             for (int dx = -radius; dx <= radius; dx++) {
@@ -153,214 +814,84 @@ public class OmrProcessor {
                 int x = cx + dx, y = cy + dy;
                 if (x < 0 || x >= imgW || y < 0 || y >= imgH) continue;
                 int p = pixels[y * imgW + x];
-                int rC = (p >> 16) & 0xFF;
-                int gC = (p >> 8) & 0xFF;
-                int bC = p & 0xFF;
-                int br = (rC * 299 + gC * 587 + bC * 114) / 1000;
-                if (br < DARK_PIXEL_THRESHOLD) dark++;
-                total++;
+                sum += ((p >> 16 & 0xFF) * 299
+                      + (p >>  8 & 0xFF) * 587
+                      + (p       & 0xFF) * 114) / 1000;
+                count++;
             }
         }
-        return total == 0 ? 0f : (float) dark / total;
-    }
-
-    /** PDF point uzayındaki bir mesafenin görselde kaç pixel'e karşılık geldiğini bulur. */
-    private static float mapDistance(Matrix m, float distPt) {
-        float[] p1 = {0, 0};
-        float[] p2 = {distPt, 0};
-        m.mapPoints(p1);
-        m.mapPoints(p2);
-        float dx = p2[0] - p1[0];
-        float dy = p2[1] - p1[1];
-        return (float) Math.sqrt(dx * dx + dy * dy);
+        return count == 0 ? 1f : sum / (255f * count);
     }
 
     /**
-     * 4 köşedeki siyah kare markerları bulur.
-     * 4'ünü de bulamazsa null döndürür (homografi için hepsi gerekli).
+     * (cx, cy) merkezi etrafında ±searchRadius bölgesinde KAYDIRMALI ARAMA yapar.
+     * Her aday merkezde {@code sampleRadius}'lık BÜYÜK dairesel bir bölgenin
+     * ORTALAMA parlaklığını hesaplar; bunlardan EN KOYU OLANI döndürür.
+     *
+     * Önemli fark: sampleRadius bilinçli olarak BÜYÜK (bubble'ın %75-80'i).
+     * Böylece dairenin ortasındaki HARF (A/B/C/D vs.) sample alanının çok küçük
+     * bir oranını kaplar ve ortalamayı belirgin şekilde etkilemez:
+     *  - Boş daire (orta harf): ortalama ~0.90 (beyaz dominant)
+     *  - Dolu daire: ortalama ~0.40
+     * searchRadius küçük (~2 piksel) → koordinat haritalamasında bir-iki
+     * piksellik kaymayı tolere etmek için.
      */
-    private static PointF[] detectCorners(int[] pixels, int imgW, int imgH,
-                                          int pdfW, int pdfH) {
-        PointF[] partial = detectCornersPartial(pixels, imgW, imgH, pdfW, pdfH);
-        if (partial[0] == null || partial[1] == null
-                || partial[2] == null || partial[3] == null) return null;
-        return partial;
+    private static float sampleAverageNearby(int[] pixels, int cx, int cy,
+                                              int sampleRadius, int searchRadius,
+                                              int imgW, int imgH) {
+        // searchR büyüdüğünde her piksel taraması maliyetli; step=2 doğruluğu bozmaz
+        // çünkü dolu kabarcığın yarıçapı zaten 10-15 px (Nyquist içi).
+        int step = searchRadius >= 5 ? 2 : 1;
+        float best = 1f;
+        int sr2 = searchRadius * searchRadius;
+        for (int dy = -searchRadius; dy <= searchRadius; dy += step) {
+            for (int dx = -searchRadius; dx <= searchRadius; dx += step) {
+                if (dx * dx + dy * dy > sr2) continue;
+                float br = sampleBrightness(pixels,
+                    cx + dx, cy + dy, sampleRadius, imgW, imgH);
+                if (br < best) best = br;
+            }
+        }
+        return best;
     }
 
+    // ════════════════════════════════════════════════════════════════════════
+    //                  REAL-TIME API (canlı kamera kareleri)
+    // ════════════════════════════════════════════════════════════════════════
+
     /**
-     * Görüntüyü 4 çeyreğe böler ve her çeyrekte multi-scale sliding-window
-     * ile "açık çerçeve içinde koyu kare" örüntüsünü arar.
-     * Her çeyrekte bulunmayan slot null kalır (toplam 4 elemanlı dizi döner).
+     * Canlı kamera karesinden 4 köşe markerını bulur.
+     * Kağıt tespiti + paper-bounded marker arama uygulanır.
+     * Dönüş: 4 PointF [TL, TR, BL, BR] (her biri null olabilir).
      */
     public static PointF[] detectCornersPartial(int[] pixels, int imgW, int imgH,
                                                 int pdfW, int pdfH) {
-        // Form fotoğrafın bir kısmında olabilir; multi-scale tarayıp uygun boyutu bul.
-        float fullMarkerW = (float) imgW * PdfGenerator.MARKER_PT / pdfW;
-        float fullMarkerH = (float) imgH * PdfGenerator.MARKER_PT / pdfH;
-        float[] scales = {0.25f, 0.4f, 0.6f, 0.85f, 1.1f};
-
-        int qW = imgW / 2;
-        int qH = imgH / 2;
+        // 1. Kağıt sınırları
+        int[] paper = detectPaperBounds(pixels, imgW, imgH);
+        int pl = paper[0], ptop = paper[1], pr = paper[2], pb = paper[3];
+        int paperW = pr - pl;
+        int paperH = pb - ptop;
+        if (paperW < imgW / 4 || paperH < imgH / 4) {
+            pl = 0; ptop = 0; pr = imgW; pb = imgH;
+            paperW = imgW; paperH = imgH;
+        }
+        // 2. Kağıt içinde köşe arama (~%16 — kamera açısı için pay)
+        int sw = Math.max(40, paperW / 6);
+        int sh = Math.max(40, paperH / 6);
+        // PDF'te marker 18pt; kağıt genişliği orantısı ile beklenen piksel boyutu.
+        int expectedMarkerPx = Math.max(8, Math.round(paperW * (PdfGenerator.MARKER_PT / (float) pdfW)));
         return new PointF[]{
-            bestMarkerInRegion(pixels, imgW, imgH, 0,  0,  qW,    qH,    fullMarkerW, fullMarkerH, scales),
-            bestMarkerInRegion(pixels, imgW, imgH, qW, 0,  imgW,  qH,    fullMarkerW, fullMarkerH, scales),
-            bestMarkerInRegion(pixels, imgW, imgH, 0,  qH, qW,    imgH,  fullMarkerW, fullMarkerH, scales),
-            bestMarkerInRegion(pixels, imgW, imgH, qW, qH, imgW,  imgH,  fullMarkerW, fullMarkerH, scales)
+            findMarkerCenter(pixels, imgW, imgH, pl,         ptop,        pl + sw, ptop + sh, expectedMarkerPx), // TL
+            findMarkerCenter(pixels, imgW, imgH, pr - sw,    ptop,        pr,      ptop + sh, expectedMarkerPx), // TR
+            findMarkerCenter(pixels, imgW, imgH, pl,         pb - sh,     pl + sw, pb,        expectedMarkerPx), // BL
+            findMarkerCenter(pixels, imgW, imgH, pr - sw,    pb - sh,     pr,      pb,        expectedMarkerPx)  // BR
         };
     }
 
     /**
-     * Verilen bölgede multi-scale sliding-window ile en iyi marker adayını bulur.
-     * Skor = (pencere_etrafındaki_avg_parlaklık − pencere_içi_avg_parlaklık).
-     * Yüksek skor → açık çerçeve içinde koyu kare → marker.
-     * Bu sürüm yazıcıdan basıldığında "gri" (RGB ~120) tonda görünen markerları
-     * da kabul edecek şekilde gevşek eşikler kullanır.
-     */
-    private static PointF bestMarkerInRegion(int[] pixels, int imgW, int imgH,
-                                             int x0, int y0, int x1, int y1,
-                                             float fullW, float fullH, float[] scales) {
-        PointF bestPoint = null;
-        float bestScore = 0f;
-        int regionW = x1 - x0;
-        int regionH = y1 - y0;
-
-        for (float s : scales) {
-            int winW = Math.max(6, Math.round(fullW * s));
-            int winH = Math.max(6, Math.round(fullH * s));
-            // Halo (pencere etrafında açık çerçeve) genişliği
-            int halo = Math.max(3, Math.min(winW, winH) / 2);
-            int extW = winW + 2 * halo;
-            int extH = winH + 2 * halo;
-            if (extW > regionW || extH > regionH) continue;
-
-            int stride = Math.max(2, Math.min(winW, winH) / 3);
-            for (int wy = y0; wy + extH <= y1; wy += stride) {
-                for (int wx = x0; wx + extW <= x1; wx += stride) {
-                    int innerX = wx + halo;
-                    int innerY = wy + halo;
-                    long innerAvg = areaAvgBrightness(pixels, imgW,
-                        innerX, innerY, innerX + winW, innerY + winH);
-                    // Marker iç kısmı kağıttan belirgin koyu olmalı (gri baskıyı da kabul)
-                    if (innerAvg > 140) continue;
-
-                    long ringAvg = ringAvgBrightness(pixels, imgW,
-                        wx, wy, wx + extW, wy + extH,
-                        innerX, innerY, innerX + winW, innerY + winH);
-                    // Marker etrafı kağıt rengi (açık) olmalı
-                    if (ringAvg < 150) continue;
-
-                    float score = ringAvg - innerAvg;
-                    // Yeterli kontrast olmalı — masa üstü gölgeleri elemek için
-                    if (score < 50) continue;
-
-                    if (score > bestScore) {
-                        bestScore = score;
-                        bestPoint = new PointF(innerX + winW / 2f,
-                                                innerY + winH / 2f);
-                    }
-                }
-            }
-        }
-
-        if (bestPoint == null) return null;
-        // Alt-pixel hassasiyet için ağırlıklı koyu-merkez ile rafine et
-        return refineCenter(pixels, imgW, imgH, bestPoint,
-                            Math.round(fullW * 1.2f),
-                            Math.round(fullH * 1.2f));
-    }
-
-    /** Bir dikdörtgen alanın ortalama parlaklığı (her 2px bir örnek - hız için). */
-    private static long areaAvgBrightness(int[] pixels, int imgW,
-                                          int x0, int y0, int x1, int y1) {
-        long sum = 0;
-        int count = 0;
-        for (int y = y0; y < y1; y += 2) {
-            int rowBase = y * imgW;
-            for (int x = x0; x < x1; x += 2) {
-                int p = pixels[rowBase + x];
-                int r = (p >> 16) & 0xFF;
-                int g = (p >> 8) & 0xFF;
-                int b = p & 0xFF;
-                sum += (r * 299 + g * 587 + b * 114) / 1000;
-                count++;
-            }
-        }
-        return count == 0 ? 0 : sum / count;
-    }
-
-    /** [outerX0..outerX1]×[outerY0..outerY1] − [innerX0..innerX1]×[innerY0..innerY1]
-     *  bant alanının ortalama parlaklığı. */
-    private static long ringAvgBrightness(int[] pixels, int imgW,
-                                          int outX0, int outY0, int outX1, int outY1,
-                                          int inX0, int inY0, int inX1, int inY1) {
-        long sum = 0;
-        int count = 0;
-        for (int y = outY0; y < outY1; y += 2) {
-            int rowBase = y * imgW;
-            boolean rowInside = (y >= inY0 && y < inY1);
-            for (int x = outX0; x < outX1; x += 2) {
-                if (rowInside && x >= inX0 && x < inX1) continue;
-                int p = pixels[rowBase + x];
-                int r = (p >> 16) & 0xFF;
-                int g = (p >> 8) & 0xFF;
-                int b = p & 0xFF;
-                sum += (r * 299 + g * 587 + b * 114) / 1000;
-                count++;
-            }
-        }
-        return count == 0 ? 0 : sum / count;
-    }
-
-    /** Verilen merkez etrafında koyu pixel ağırlıklı merkez ile alt-pixel hassasiyet. */
-    private static PointF refineCenter(int[] pixels, int imgW, int imgH,
-                                       PointF approxCenter, int boxW, int boxH) {
-        int cx = Math.round(approxCenter.x);
-        int cy = Math.round(approxCenter.y);
-        int x0 = Math.max(0, cx - boxW / 2);
-        int y0 = Math.max(0, cy - boxH / 2);
-        int x1 = Math.min(imgW, cx + boxW / 2);
-        int y1 = Math.min(imgH, cy + boxH / 2);
-        long sumX = 0, sumY = 0, weight = 0;
-        final int DARK_LIMIT = 130; // gri baskı markerları da yakalansın
-        for (int y = y0; y < y1; y++) {
-            int rowBase = y * imgW;
-            for (int x = x0; x < x1; x++) {
-                int p = pixels[rowBase + x];
-                int r = (p >> 16) & 0xFF;
-                int g = (p >> 8) & 0xFF;
-                int b = p & 0xFF;
-                int br = (r * 299 + g * 587 + b * 114) / 1000;
-                if (br < DARK_LIMIT) {
-                    int w = DARK_LIMIT - br;
-                    sumX += (long) x * w;
-                    sumY += (long) y * w;
-                    weight += w;
-                }
-            }
-        }
-        if (weight < 50) return approxCenter;
-        return new PointF((float) sumX / weight, (float) sumY / weight);
-    }
-
-    // ─── Real-time API (canlı kamera kareleri için) ──────────────────────────────
-
-    /**
-     * Canlı kamera karesinden 4 köşe markerını bulmak için (RGB int[] bekler).
-     * pdfW/pdfH: form sayfasının point boyutu (oran tahmini için).
-     * Dönüş: 4 PointF [TL, TR, BL, BR] veya yeterli marker yoksa null.
-     */
-    public static PointF[] detectCornersFromRgb(int[] pixels, int imgW, int imgH,
-                                                int pdfW, int pdfH) {
-        return detectCorners(pixels, imgW, imgH, pdfW, pdfH);
-    }
-
-    /**
      * Y-plane (luminance) byte buffer'ından partial 4 köşe markerını bulur.
-     * @param luma Y-plane byte verisi (her byte 0..255 luminance).
-     * @param rowStride satır arası byte mesafesi.
      * @param scratchBuffer dışarıdan verilen, en az imgW*imgH boyutlu int[] buffer
-     *                     (yeniden kullanım için; her frame yeni allocate'i önler).
-     *                     null verilirse her çağrıda yeni allocate edilir.
+     *                     (her frame yeni allocate'i önler). null verilirse her çağrıda yeni allocate.
      */
     public static PointF[] detectCornersFromLumaPartial(byte[] luma, int rowStride,
                                                        int imgW, int imgH,
@@ -378,5 +909,24 @@ public class OmrProcessor {
             }
         }
         return detectCornersPartial(pixels, imgW, imgH, pdfW, pdfH);
+    }
+
+    /**
+     * {@link #detectCornersFromLumaPartial} ile doldurulmuş ARGB scratch üzerinde
+     * tam görüntü işlemeyle aynı kağıt-içi parlaklık yayılımı (0..1).
+     * Kağıt güvenilir bulunamazsa 0 — önizlemede yanlışlıkla kilitleme yapılmaz.
+     */
+    public static float previewIlluminationSpread(int[] argbPixels, int imgW, int imgH) {
+        if (argbPixels == null || imgW < 32 || imgH < 32) return 0f;
+        int[] paper = detectPaperBounds(argbPixels, imgW, imgH);
+        int pl = paper[0], ptop = paper[1], pr = paper[2], pb = paper[3];
+        int paperW = pr - pl, paperH = pb - ptop;
+        if (paperW < imgW / 4 || paperH < imgH / 4) return 0f;
+        return computePaperIlluminationSpread(argbPixels, imgW, imgH, pl, ptop, pr, pb);
+    }
+
+    /** Canlı önizlemede gölge eşiği — geri sayım / otomatik çekim durdurulur. */
+    public static boolean isPreviewBlockedByShadow(int[] argbPixels, int imgW, int imgH) {
+        return previewIlluminationSpread(argbPixels, imgW, imgH) >= SHADOW_SPREAD_THRESHOLD;
     }
 }

@@ -7,10 +7,16 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
 import android.graphics.PointF;
+import android.graphics.RectF;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.media.ExifInterface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.util.Log;
 import android.util.Size;
 import android.view.*;
 import android.widget.*;
@@ -61,13 +67,44 @@ public class KagitOkuActivity extends AppCompatActivity {
     private LinearLayout bottomBar;
     private AlignmentOverlayView alignmentOverlay;
     private OptikForm cachedForm;
-    // Real-time hizalama için
-    private static final int REQUIRED_ALIGNED_FRAMES = 4;
+    /** Analiz aralığı (~5 fps): her stabil kare bu süre ile sayılır. */
+    private static final long MIN_ANALYZE_INTERVAL_NS = 200_000_000L; // 200 ms
+    /**
+     * 4 köşe + eğim ikisi birden bu süre boyunca kesintisiz OK kalırsa çekim tetiklenir.
+     * Biri bile düşerse sayaç sıfırlanır; 3-2-1 ekranda bu sürenin üç eşit parçasıdır (~1 sn / rakam).
+     */
+    private static final long STABILITY_HOLD_NS = 3_000_000_000L; // 3 saniye
+    private static final int REQUIRED_ALIGNED_FRAMES =
+        (int) (STABILITY_HOLD_NS / MIN_ANALYZE_INTERVAL_NS); // 15
     private int alignedFrameCount = 0;
     private volatile boolean autoCaptureTriggered = false;
     private int[] lumaScratchBuffer;
     private long lastAnalyzeNs = 0;
-    private static final long MIN_ANALYZE_INTERVAL_NS = 200_000_000L; // 200ms (~5 fps)
+    /** Otomatik çekim için neden bekliyor? Periyodik loglama (~her 2 saniyede bir). */
+    private long lastReadinessLogNs = 0;
+    /** Gölge nedeniyle geri sayım engellendi uyarısını spam etmemek için. */
+    private long lastShadowToastNs = 0L;
+    private static final long SHADOW_TOAST_INTERVAL_NS = 3_500_000_000L; // 3.5 sn
+
+    // ─── Eğim sensörü (telefonu kağıda paralel tutmak için) ──────────────────
+    private SensorManager sensorManager;
+    private Sensor rotationSensor;
+    private final float[] rotationMatrix = new float[9];
+    private final float[] orientationVals = new float[3];
+    private final SensorEventListener tiltListener = new SensorEventListener() {
+        @Override public void onSensorChanged(SensorEvent event) {
+            if (event.sensor.getType() != Sensor.TYPE_ROTATION_VECTOR) return;
+            SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
+            SensorManager.getOrientation(rotationMatrix, orientationVals);
+            // orientationVals[1] = pitch (radyan), [2] = roll
+            float pitchDeg = (float) Math.toDegrees(orientationVals[1]);
+            float rollDeg  = (float) Math.toDegrees(orientationVals[2]);
+            if (alignmentOverlay != null) {
+                alignmentOverlay.setTilt(pitchDeg, rollDeg);
+            }
+        }
+        @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -109,6 +146,12 @@ public class KagitOkuActivity extends AppCompatActivity {
             Toast.makeText(this, "Sınav bulunamadı", Toast.LENGTH_SHORT).show();
             finish();
             return;
+        }
+
+        // Eğim sensörünü başlat (telefonu paralel tutma yardımı için)
+        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+        if (sensorManager != null) {
+            rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
         }
 
         yukleForm();
@@ -253,14 +296,30 @@ public class KagitOkuActivity extends AppCompatActivity {
                     if (bmp != null) {
                         processBitmap(bmp);
                     } else {
-                        runOnUiThread(() -> Toast.makeText(KagitOkuActivity.this,
-                            "Fotoğraf okunamadı", Toast.LENGTH_SHORT).show());
+                        autoCaptureTriggered = false;
+                        alignedFrameCount = 0;
+                        runOnUiThread(() -> {
+                            if (alignmentOverlay != null) {
+                                alignmentOverlay.setProcessingText(null);
+                            }
+                            Toast.makeText(KagitOkuActivity.this,
+                                "Fotoğraf okunamadı, tekrar deneyin",
+                                Toast.LENGTH_SHORT).show();
+                        });
                     }
                 }
                 @Override
                 public void onError(@NonNull ImageCaptureException e) {
-                    runOnUiThread(() -> Toast.makeText(KagitOkuActivity.this,
-                        "Fotoğraf çekilemedi: " + e.getMessage(), Toast.LENGTH_SHORT).show());
+                    autoCaptureTriggered = false;
+                    alignedFrameCount = 0;
+                    runOnUiThread(() -> {
+                        if (alignmentOverlay != null) {
+                            alignmentOverlay.setProcessingText(null);
+                        }
+                        Toast.makeText(KagitOkuActivity.this,
+                            "Fotoğraf çekilemedi: " + e.getMessage(),
+                            Toast.LENGTH_SHORT).show();
+                    });
                 }
             });
     }
@@ -340,7 +399,13 @@ public class KagitOkuActivity extends AppCompatActivity {
 
     private void processBitmap(Bitmap bitmap) {
         // Called from executor thread (both camera and gallery paths)
+        Log.i("OMR", "▶▶ processBitmap çağrıldı: bmp="
+            + (bitmap == null ? "null"
+                              : (bitmap.getWidth() + "x" + bitmap.getHeight())));
         if (sinav == null || (cevapAlanlar.isEmpty() && bilgiAlanlar.isEmpty())) {
+            Log.w("OMR", "processBitmap: form/alanlar boş — manuel'e düşülüyor"
+                + " (sinav=" + (sinav != null) + ", cevap=" + cevapAlanlar.size()
+                + ", bilgi=" + bilgiAlanlar.size() + ")");
             runOnUiThread(() -> {
                 switchToManual();
                 Toast.makeText(this,
@@ -348,24 +413,43 @@ public class KagitOkuActivity extends AppCompatActivity {
             });
             return;
         }
+        runOnUiThread(() -> {
+            if (alignmentOverlay != null) {
+                alignmentOverlay.setProcessingText("Görüntü hazırlanıyor...");
+            }
+        });
         try {
             OptikForm form = db.optikFormDao().getById(sinav.optikFormId);
             if (form == null) {
+                Log.e("OMR", "processBitmap: optik form veritabanında yok (id="
+                    + sinav.optikFormId + ")");
                 runOnUiThread(this::switchToManual);
                 return;
             }
             int pdfW = PdfGenerator.getPdfWidth(form);
             int pdfH = PdfGenerator.getPdfHeight(form);
             int canvasW = PdfGenerator.getCanvasWidthDp(form);
+            Log.i("OMR", "Form boyutları: pdf=" + pdfW + "x" + pdfH + "pt"
+                + " canvas=" + canvasW + "dp"
+                + " | cevapAlan=" + cevapAlanlar.size()
+                + " bilgiAlan=" + bilgiAlanlar.size());
 
             // Bitmap'i makul boyuta indir (kamera fotoğrafı 12MP+ olabilir, RAM/hız için)
-            bitmap = downscaleIfNeeded(bitmap, 1600);
+            int beforeW = bitmap.getWidth(), beforeH = bitmap.getHeight();
+            // Biraz daha yüksek çözününlük → homografi sonrası bubble örneklemesi daha stabil
+            // (aynı formda çekimler arası 1/20 ↔ 12/20 dalgalanmayı azaltır).
+            bitmap = downscaleIfNeeded(bitmap, 2000);
+            if (bitmap.getWidth() != beforeW || bitmap.getHeight() != beforeH) {
+                Log.i("OMR", "Downscale: " + beforeW + "x" + beforeH
+                    + " → " + bitmap.getWidth() + "x" + bitmap.getHeight());
+            }
 
             // Form dikey (portrait) ama bitmap yatay (landscape) ise 90° döndür.
             // CameraX bazı cihazlarda EXIF'i NORMAL olarak yazıyor, bitmap landscape kalıyor.
             boolean formPortrait = pdfH > pdfW;
             boolean bmpLandscape = bitmap.getWidth() > bitmap.getHeight();
             if (formPortrait && bmpLandscape) {
+                Log.i("OMR", "Yön düzeltiliyor: form portrait, bitmap landscape → 90° döndür");
                 Matrix m = new Matrix();
                 m.postRotate(90);
                 Bitmap rotated = Bitmap.createBitmap(
@@ -374,12 +458,44 @@ public class KagitOkuActivity extends AppCompatActivity {
                 bitmap = rotated;
             }
 
+            runOnUiThread(() -> {
+                if (alignmentOverlay != null) {
+                    alignmentOverlay.setProcessingText("Köşe işaretleri aranıyor...");
+                }
+            });
+
             // Tüm alanları (cevap + bilgi) tek seferde işle
             List<OptikFormAlan> tumAlanlar = new ArrayList<>();
             tumAlanlar.addAll(cevapAlanlar);
             tumAlanlar.addAll(bilgiAlanlar);
-            Map<Long, List<String>> detected =
-                OmrProcessor.process(bitmap, tumAlanlar, pdfW, pdfH, canvasW);
+
+            runOnUiThread(() -> {
+                if (alignmentOverlay != null) {
+                    alignmentOverlay.setProcessingText("Cevaplar okunuyor...");
+                }
+            });
+
+            OmrProcessor.ProcessResult omrOutcome =
+                OmrProcessor.processWithDiagnostics(bitmap, tumAlanlar, pdfW, pdfH, canvasW);
+
+            if (omrOutcome.unevenIllumination) {
+                Log.w("OMR", "Okuma iptal: kağıt üzerinde belirgin gölge / düzensiz ışık (spread="
+                    + String.format(Locale.US, "%.3f", omrOutcome.illuminationSpread) + ")");
+                runOnUiThread(() -> {
+                    autoCaptureTriggered = false;
+                    alignedFrameCount = 0;
+                    if (alignmentOverlay != null) {
+                        alignmentOverlay.setProcessingText(null);
+                    }
+                    Toast.makeText(KagitOkuActivity.this,
+                        "Kağıt üzerinde güçlü gölge algılandı; optik okuma yapılmadı.\n"
+                            + "Kağıdı gölgelenmeyen, düzgün aydınlatılmış bir yerde tutup tekrar deneyin.",
+                        Toast.LENGTH_LONG).show();
+                });
+                return;
+            }
+
+            Map<Long, List<String>> detected = omrOutcome.answers;
 
             // Toplam algılanan işaret sayısı (kullanıcıya geri bildirim için)
             int totalMarked = 0;
@@ -390,6 +506,8 @@ public class KagitOkuActivity extends AppCompatActivity {
                 }
             }
             final int finalMarked = totalMarked;
+            Log.i("OMR", "ÖZET: toplam işaret=" + finalMarked
+                + " | alan başına: " + summarizeDetected(detected));
 
             // Ad Soyad / Sınıf için seçilen harfleri birleştir
             String adSoyadDetected = null;
@@ -429,11 +547,19 @@ public class KagitOkuActivity extends AppCompatActivity {
 
                 String msg;
                 if (finalMarked == 0) {
-                    msg = "Hiç işaret algılanmadı. Köşedeki 4 siyah kareyi de "
-                        + "kadrajda görecek şekilde, dik açıdan ve iyi ışıkta tekrar deneyin.";
+                    msg = "Hiç işaret algılanmadı. 4 siyah kareyi tam kadrajda, "
+                        + "dik açıdan ve iyi ışıkta tutarak tekrar deneyin.";
                 } else {
-                    msg = "Optik form okundu (" + finalMarked
-                        + " işaret). Lütfen kontrol edin.";
+                    StringBuilder sb = new StringBuilder();
+                    sb.append("✓ Optik okundu — ").append(finalMarked).append(" işaret");
+                    if (finalAdSoyad != null && !finalAdSoyad.isEmpty()) {
+                        sb.append(" • Ad: ").append(finalAdSoyad);
+                    }
+                    if (finalSinif != null && !finalSinif.isEmpty()) {
+                        sb.append(" • Sınıf: ").append(finalSinif);
+                    }
+                    sb.append("\nLütfen kontrol edin.");
+                    msg = sb.toString();
                 }
                 Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
             });
@@ -445,6 +571,23 @@ public class KagitOkuActivity extends AppCompatActivity {
                     "Otomatik okuma başarısız. Manuel giriş yapın.", Toast.LENGTH_LONG).show();
             });
         }
+    }
+
+    /** Logcat özet satırı: alan-id → "kaç/toplam işaretli" */
+    private String summarizeDetected(Map<Long, List<String>> detected) {
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<Long, List<String>> e : detected.entrySet()) {
+            int marked = 0, total = 0;
+            if (e.getValue() != null) {
+                total = e.getValue().size();
+                for (String s : e.getValue()) {
+                    if (s != null && !s.isEmpty()) marked++;
+                }
+            }
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(e.getKey()).append(":").append(marked).append("/").append(total);
+        }
+        return sb.toString();
     }
 
     /** Bitmap'i en uzun kenarı maxLong'u geçmeyecek şekilde küçültür. */
@@ -523,9 +666,11 @@ public class KagitOkuActivity extends AppCompatActivity {
                     .build();
 
                 // Real-time marker tespiti için ImageAnalysis use-case
+                // 720×960: marker pikseli ~22px → 4 köşeyi tutarlı yakalamak için yeterli
+                // çözünürlük (480×640'ta marker ~14px ve sürekli 2-3/4 dalgalanıyor).
                 imageAnalysis = new ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .setTargetResolution(new Size(480, 640))
+                    .setTargetResolution(new Size(720, 960))
                     .setTargetRotation(rotation)
                     .build();
                 imageAnalysis.setAnalyzer(cameraAnalysisExecutor, this::analyzeFrame);
@@ -542,9 +687,10 @@ public class KagitOkuActivity extends AppCompatActivity {
     }
 
     /**
-     * Kameranın canlı önizleme karelerinde 4 köşe markerını arar; bulduklarına göre
-     * overlay'i (yeşil/kırmızı) günceller. 4 marker üst üste birkaç frame stabil
-     * algılanırsa otomatik çekim tetikler.
+     * Canlı karede 4 köşe markerını arar. Otomatik çekim için eşzamanlı olarak:
+     * dört köşe bulunmuş, {@link AlignmentOverlayView#tiltOk() eğim} uygun ve
+     * tespit edilen köşe merkezleri rehber çerçeve köşelerine yeterince yakın olmalıdır.
+     * yeterince yakın olmalıdır. Bu üçü ~3 sn kesintisiz sağlanınca geri sayım ve çekim.
      */
     private void analyzeFrame(ImageProxy proxy) {
         try {
@@ -574,25 +720,98 @@ public class KagitOkuActivity extends AppCompatActivity {
             PointF[] corners = OmrProcessor.detectCornersFromLumaPartial(
                 luma, rowStride, w, h, pdfW, pdfH, lumaScratchBuffer);
 
+            boolean shadowBlocksCountdown =
+                OmrProcessor.isPreviewBlockedByShadow(lumaScratchBuffer, w, h);
+
             // Algılanan köşe sayısını overlay konumlarına maple (image yönü → ekran yönü)
             int rotDeg = proxy.getImageInfo().getRotationDegrees();
             boolean[] ok = mapCornersToScreenQuadrants(corners, rotDeg);
 
+            // Tespit edilen image-space köşeleri ekran piksel koordinatlarına çevir
+            final PointF[] screenCorners = mapCornersToScreenSpace(corners, rotDeg, w, h);
+
+            boolean allOk = ok[0] && ok[1] && ok[2] && ok[3];
+            // Eğim eşik dışındayken homografi sapacak, OMR yanlış okuyacak.
+            // 4 köşe bulunsa bile eğim düzelmeden geri sayımı başlatmıyoruz.
+            boolean tiltLevel = alignmentOverlay == null || alignmentOverlay.tiltOk();
+            // Yeşil tespit noktaları rehber çerçeve köşelerine yakın olmalı — kağıt kaymışken 4 köşe
+            // "bulunmuş" sayılıp yanlış homografi ile okuma yapılmasın.
+            boolean cornersAligned = markersNearGuideCorners(screenCorners);
+            boolean readyToCapture = allOk && tiltLevel && cornersAligned && !shadowBlocksCountdown;
+
+            if (allOk && tiltLevel && cornersAligned && shadowBlocksCountdown
+                    && now - lastShadowToastNs >= SHADOW_TOAST_INTERVAL_NS) {
+                lastShadowToastNs = now;
+                runOnUiThread(() ->
+                    Toast.makeText(KagitOkuActivity.this,
+                        "Gölge sebebiyle optik okuma başlatılamadı. Kağıdı gölgelenmeyen bir yerde tutun.",
+                        Toast.LENGTH_LONG).show());
+            }
+            // Hysteresis: ready iken +1; değilken -2 (yavaş kazan, hızlı kaybet).
+            // Tek-tek kare flicker'larında (AF/exposure mikroskopik kayma) sayaç sıfırlanmaz
+            // ama gerçek hizasızlık 2-3 karede zaten 0'a düşer.
+            if (readyToCapture) {
+                if (alignedFrameCount < REQUIRED_ALIGNED_FRAMES) alignedFrameCount++;
+            } else {
+                alignedFrameCount = Math.max(0, alignedFrameCount - 2);
+            }
+
+            if (!readyToCapture && now - lastReadinessLogNs > 2_000_000_000L) {
+                lastReadinessLogNs = now;
+                String why;
+                if (!allOk) {
+                    int found = (ok[0]?1:0) + (ok[1]?1:0) + (ok[2]?1:0) + (ok[3]?1:0);
+                    why = "köşe " + found + "/4";
+                } else if (!tiltLevel) {
+                    why = String.format(java.util.Locale.US,
+                        "eğim>3° (p=%.1f° r=%.1f°)",
+                        alignmentOverlay.pitchDeg(), alignmentOverlay.rollDeg());
+                } else if (!cornersAligned) {
+                    why = describeAlignmentMiss(screenCorners);
+                } else if (shadowBlocksCountdown) {
+                    why = "gölge veya düzensiz ışık";
+                } else {
+                    why = "?";
+                }
+                Log.i("OMR-AUTO", "Bekliyor: " + why + " | sayaç=" + alignedFrameCount + "/" + REQUIRED_ALIGNED_FRAMES);
+            }
+
+            // 3-2-1: STABILITY_HOLD süresinin üç eşit dilimi (~1 sn / rakam @ 200 ms × 5 kare)
+            int countdownTmp = -1;
+            if (readyToCapture && alignedFrameCount > 0 && alignedFrameCount < REQUIRED_ALIGNED_FRAMES) {
+                float p = alignedFrameCount / (float) REQUIRED_ALIGNED_FRAMES;
+                if (p <= 1f / 3f) {
+                    countdownTmp = 3;
+                } else if (p <= 2f / 3f) {
+                    countdownTmp = 2;
+                } else {
+                    countdownTmp = 1;
+                }
+            }
+            final int countdownToShow = countdownTmp;
+
+            final boolean cornersAlignedFinal = cornersAligned;
             runOnUiThread(() -> {
                 if (alignmentOverlay != null) {
+                    alignmentOverlay.setGuideCornersAligned(cornersAlignedFinal);
                     alignmentOverlay.setDetectedCorners(ok[0], ok[1], ok[2], ok[3]);
+                    alignmentOverlay.setDetectedScreenPositions(
+                        screenCorners[0], screenCorners[1],
+                        screenCorners[2], screenCorners[3]);
+                    alignmentOverlay.setCountdown(countdownToShow);
                 }
             });
 
-            boolean allOk = ok[0] && ok[1] && ok[2] && ok[3];
-            if (allOk) {
-                alignedFrameCount++;
-                if (alignedFrameCount >= REQUIRED_ALIGNED_FRAMES && !autoCaptureTriggered) {
-                    autoCaptureTriggered = true;
-                    runOnUiThread(this::captureAndScan);
-                }
-            } else {
-                alignedFrameCount = 0;
+            if (readyToCapture
+                    && alignedFrameCount >= REQUIRED_ALIGNED_FRAMES
+                    && !autoCaptureTriggered) {
+                autoCaptureTriggered = true;
+                runOnUiThread(() -> {
+                    if (alignmentOverlay != null) {
+                        alignmentOverlay.setProcessingText("Çekiliyor — sabit tutun");
+                    }
+                    captureAndScan();
+                });
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -628,6 +847,168 @@ public class KagitOkuActivity extends AppCompatActivity {
             result[i] = imageCorners[map[i]] != null;
         }
         return result;
+    }
+
+    /**
+     * image-space marker konumlarını PreviewView ekran piksel koordinatlarına çevirir.
+     * Sıra: TL, TR, BL, BR (ekran perspektifinde). null = tespit edilemedi.
+     */
+    private PointF[] mapCornersToScreenSpace(PointF[] imageCorners, int rotDeg,
+                                             int imgW, int imgH) {
+        PointF[] out = new PointF[4];
+        if (imageCorners == null || previewView == null) return out;
+
+        int[] map;
+        switch ((rotDeg % 360 + 360) % 360) {
+            case 90:  map = new int[]{2, 0, 3, 1}; break;
+            case 180: map = new int[]{3, 2, 1, 0}; break;
+            case 270: map = new int[]{1, 3, 0, 2}; break;
+            default:  map = new int[]{0, 1, 2, 3}; break;
+        }
+
+        // Ekran döndürüldükten sonra image'ın kullanılan boyutu
+        int rotW = (rotDeg == 90 || rotDeg == 270) ? imgH : imgW;
+        int rotH = (rotDeg == 90 || rotDeg == 270) ? imgW : imgH;
+
+        int viewW = previewView.getWidth();
+        int viewH = previewView.getHeight();
+        if (viewW <= 0 || viewH <= 0 || rotW <= 0 || rotH <= 0) return out;
+
+        // PreviewView FILL_CENTER kullanır: image en uzun boyutu doldurur, fazla kısımlar
+        // ekran dışına taşar. Bunu hesaplayalım:
+        float scale = Math.max((float) viewW / rotW, (float) viewH / rotH);
+        float drawW = rotW * scale;
+        float drawH = rotH * scale;
+        float offsetX = (viewW - drawW) / 2f;
+        float offsetY = (viewH - drawH) / 2f;
+
+        for (int i = 0; i < 4; i++) {
+            PointF p = imageCorners[map[i]];
+            if (p == null) continue;
+            // image koordinatını rotasyona göre döndürülmüş image koordinatına çevir
+            float rx, ry;
+            switch ((rotDeg % 360 + 360) % 360) {
+                case 90:  rx = imgH - p.y; ry = p.x;            break;
+                case 180: rx = imgW - p.x; ry = imgH - p.y;     break;
+                case 270: rx = p.y;        ry = imgW - p.x;     break;
+                default:  rx = p.x;        ry = p.y;            break;
+            }
+            float screenX = rx * scale + offsetX;
+            float screenY = ry * scale + offsetY;
+            out[i] = new PointF(screenX, screenY);
+        }
+        return out;
+    }
+
+    /**
+     * {@link AlignmentOverlayView#getFrameRect()} ile aynı matematik — Preview ile overlay
+     * eş boyutta (cameraContainer içinde match_parent).
+     */
+    private RectF computeOverlayGuideFrame() {
+        if (previewView == null) return null;
+        int w = previewView.getWidth();
+        int h = previewView.getHeight();
+        if (w <= 0 || h <= 0) return null;
+        float density = getResources().getDisplayMetrics().density;
+        float margin = 0.06f;
+        float a4 = 210f / 297f;
+        float maxW = w * (1f - 2f * margin);
+        float maxH = h * (1f - 2f * margin) - 80f * density;
+        float frameH = maxH;
+        float frameW = frameH * a4;
+        if (frameW > maxW) {
+            frameW = maxW;
+            frameH = frameW / a4;
+        }
+        float left = (w - frameW) / 2f;
+        float top = (h - frameH) / 2f - 20f * density;
+        return new RectF(left, top, left + frameW, top + frameH);
+    }
+
+    /**
+     * Kamera analizinin ürettiği ekran köşeleri, yeşil rehber dikdörtgenin köşelerine
+     * yeterince yakınsa true. Aksi halde kullanıcı kağıdı kaydırmadan otomatik çekim yapılmaz.
+     */
+    /** Hizalama neden sağlanmadı? Kullanıcı yönlendirmesi için kısa metin döner. */
+    private String describeAlignmentMiss(PointF[] screenCorners) {
+        RectF frame = computeOverlayGuideFrame();
+        if (frame == null || screenCorners == null) return "kareler çerçeveye oturmamış";
+        float pdfW = (cachedForm != null) ? PdfGenerator.getPdfWidth(cachedForm) : 595f;
+        float pdfH = (cachedForm != null) ? PdfGenerator.getPdfHeight(cachedForm) : 842f;
+        float markerCenterPt = PdfGenerator.MARKER_PADDING_PT + PdfGenerator.MARKER_PT / 2f;
+        float insetX = frame.width()  * (markerCenterPt / pdfW);
+        float insetY = frame.height() * (markerCenterPt / pdfH);
+        float[] tx = {frame.left + insetX, frame.right - insetX, frame.left + insetX, frame.right - insetX};
+        float[] ty = {frame.top + insetY,  frame.top + insetY,   frame.bottom - insetY, frame.bottom - insetY};
+        StringBuilder sb = new StringBuilder("kareler hizasız [");
+        for (int i = 0; i < 4; i++) {
+            PointF p = screenCorners[i];
+            if (p == null) { sb.append("?"); }
+            else {
+                float dx = p.x - tx[i];
+                float dy = p.y - ty[i];
+                float d = (float) Math.sqrt(dx * dx + dy * dy);
+                sb.append(String.format(java.util.Locale.US, "%.0f", d));
+            }
+            if (i < 3) sb.append(",");
+        }
+        sb.append("px]");
+        return sb.toString();
+    }
+
+    private boolean markersNearGuideCorners(PointF[] screenCorners) {
+        RectF frame = computeOverlayGuideFrame();
+        if (frame == null || frame.width() <= 1 || screenCorners == null) return false;
+        float density = getResources().getDisplayMetrics().density;
+
+        // ─── Marker'ın kağıt kenarından MERKEZ İNSET'i (PDF üzerinden hesap) ───
+        // Marker üst/sol kenardan MARKER_PADDING_PT, kendisi MARKER_PT geniş; merkezi
+        // pad + size/2 = 19pt. Çerçeve A4 (210/297) tutar; PDF orijinal de A4 (595x842pt).
+        // Bu yüzden inset oranı: 19 / pdfWidth (yatay), 19 / pdfHeight (dikey).
+        float pdfW = (cachedForm != null)
+            ? PdfGenerator.getPdfWidth(cachedForm) : 595f;
+        float pdfH = (cachedForm != null)
+            ? PdfGenerator.getPdfHeight(cachedForm) : 842f;
+        float markerCenterPt = PdfGenerator.MARKER_PADDING_PT + PdfGenerator.MARKER_PT / 2f;
+        float insetX = frame.width()  * (markerCenterPt / pdfW);
+        float insetY = frame.height() * (markerCenterPt / pdfH);
+
+        // Kağıt çerçeveye iyi oturduğunda marker'ın olması gereken ekran konumu.
+        float[] tx = {
+            frame.left  + insetX, frame.right - insetX,
+            frame.left  + insetX, frame.right - insetX
+        };
+        float[] ty = {
+            frame.top    + insetY, frame.top    + insetY,
+            frame.bottom - insetY, frame.bottom - insetY
+        };
+
+        // Tolerans: çerçevenin %5'i kadar (ya da en az 24dp). Yüksek çözünürlükte
+        // kullanıcı kağıdı net oturtursa marker beklenen yerin 30-50 px yakınında olur.
+        float tol = Math.max(24f * density,
+            Math.min(frame.width(), frame.height()) * 0.05f);
+        float tol2 = tol * tol;
+        for (int i = 0; i < 4; i++) {
+            PointF p = screenCorners[i];
+            if (p == null) return false;
+            float dx = p.x - tx[i];
+            float dy = p.y - ty[i];
+            if (dx * dx + dy * dy > tol2) return false;
+        }
+        // Ek koruma: kağıt çerçeveden çok küçük çekilmişse ptToPx düşer, OMR güvenilmez olur.
+        // İşaretler çerçeveye iyi oturduysa zaten genişlik ≈ frame.width() - 2*insetX olmalı.
+        // %85 alt sınır: ufak küçülmelere izin ver, kullanıcı çerçeve dışına çıkmasın.
+        float expectedW = frame.width()  - 2f * insetX;
+        float expectedH = frame.height() - 2f * insetY;
+        float capturedW = Math.min(screenCorners[1].x, screenCorners[3].x)
+            - Math.max(screenCorners[0].x, screenCorners[2].x);
+        float capturedH = Math.min(screenCorners[2].y, screenCorners[3].y)
+            - Math.max(screenCorners[0].y, screenCorners[1].y);
+        // Per-corner tol pass etse de toplamda kağıt çok küçük çekilmemeli (≥%80 expected).
+        if (capturedW < expectedW * 0.80f || capturedH < expectedH * 0.80f) {
+            return false;
+        }
+        return true;
     }
 
     // ─── Save to Kağıtlar ────────────────────────────────────────────────────
@@ -700,6 +1081,23 @@ public class KagitOkuActivity extends AppCompatActivity {
             } else {
                 Toast.makeText(this, "Depolama izni gerekli", Toast.LENGTH_SHORT).show();
             }
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (sensorManager != null && rotationSensor != null) {
+            sensorManager.registerListener(tiltListener, rotationSensor,
+                SensorManager.SENSOR_DELAY_UI);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (sensorManager != null) {
+            sensorManager.unregisterListener(tiltListener);
         }
     }
 

@@ -4,27 +4,54 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PointF;
-import android.graphics.Rect;
 import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.View;
 
 /**
- * Kamera önizlemesi üzerine 4 köşe rehberi çizer.
- * Kullanıcı formun siyah karelerini bu rehberlerin içine getirmeye çalışır.
- * Tespit edilen markerlar yeşil, eksikler kırmızı görünür.
- * 4'ü de yeşil olduğunda alt yazıda "Hazır - tutun" mesajı çıkar.
+ * Kamera önizlemesi üzerine ÇERÇEVE rehberi çizer.
+ * Kullanıcı optik formu bu A4 oranlı dikdörtgenin içine oturtmaya çalışır.
+ *
+ *  ┌────────────────┐  ← dış kısım yarı saydam siyah ile karartılır
+ *  │  ▢  ▒▒▒▒  ▢   │     (kullanıcı kadrajı net görsün)
+ *  │  ▒▒▒▒▒▒▒▒▒▒   │
+ *  │  ▢  ▒▒▒▒  ▢   │  ← 4 köşede L-şeklinde tespit göstergeleri
+ *  └────────────────┘
+ *  Tespit edilen markerlar yeşil, eksikler kırmızı.
+ *  Ortada büyük geri sayım sayısı (3,2,1) auto-capture için.
  */
 public class AlignmentOverlayView extends View {
 
-    private final Paint guidePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint dotPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** A4 portrait oranı: 210 / 297 ≈ 0.707 */
+    private static final float A4_RATIO = 210f / 297f;
+    /** Kadraj ekran kenarlarından bu kadar boşluk bıraksın (oran). */
+    private static final float MARGIN_RATIO = 0.06f;
 
-    private boolean[] markerOk = new boolean[4]; // TL, TR, BL, BR
-    private String statusText = "Formu rehberin içine yerleştirin";
+    private final Paint guidePaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint frameOkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint frameBadPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint dotPaint     = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint textPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint shadowPaint  = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint dimPaint     = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint countdownPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    private final boolean[] markerOk = new boolean[4]; // TL, TR, BL, BR
+    private String statusText = "Optik formu çerçevenin içine yerleştirin";
+    private int countdown = -1;
+    private String processingText = null;
+
+    /** Tespit edilen marker'ların ekran-uzayındaki konumları (TL, TR, BL, BR). */
+    private final PointF[] detectedScreenPos = new PointF[4];
+
+    /** Cihaz eğim açıları (derece). 0 = telefonu kağıda paralel tut. */
+    private float pitchDeg = 0f;
+    private float rollDeg = 0f;
+    private boolean tiltAvailable = false;
+    /** Bu eşiğin altında "yeterince düz" sayılır (pitch ve roll mutlak değer). Otomatik okuma için 3°. */
+    private static final float TILT_OK_DEG = 3f;
 
     public AlignmentOverlayView(Context c) { super(c); init(); }
     public AlignmentOverlayView(Context c, AttributeSet a) { super(c, a); init(); }
@@ -32,103 +59,351 @@ public class AlignmentOverlayView extends View {
 
     private void init() {
         guidePaint.setStyle(Paint.Style.STROKE);
-        guidePaint.setStrokeWidth(dp(3));
+        guidePaint.setStrokeWidth(dp(4));
+
+        frameOkPaint.setStyle(Paint.Style.STROKE);
+        frameOkPaint.setStrokeWidth(dp(2.5f));
+        frameOkPaint.setColor(0xCC4CAF50); // yarı saydam yeşil
+
+        frameBadPaint.setStyle(Paint.Style.STROKE);
+        frameBadPaint.setStrokeWidth(dp(2.5f));
+        frameBadPaint.setColor(0xCCFFFFFF); // yarı saydam beyaz
 
         dotPaint.setStyle(Paint.Style.FILL);
-        dotPaint.setColor(Color.GREEN);
 
         textPaint.setColor(Color.WHITE);
-        textPaint.setTextSize(dp(14));
+        textPaint.setTextSize(dp(15));
         textPaint.setTextAlign(Paint.Align.CENTER);
+        textPaint.setFakeBoldText(true);
 
         shadowPaint.setStyle(Paint.Style.FILL);
-        shadowPaint.setColor(0x88000000);
+        shadowPaint.setColor(0xCC000000);
+
+        dimPaint.setStyle(Paint.Style.FILL);
+        dimPaint.setColor(0x99000000); // dış alan karartma
+
+        countdownPaint.setColor(0xFF4CAF50);
+        countdownPaint.setTextSize(dp(120));
+        countdownPaint.setTextAlign(Paint.Align.CENTER);
+        countdownPaint.setFakeBoldText(true);
+        countdownPaint.setShadowLayer(dp(6), 0, dp(2), 0xCC000000);
     }
 
-    /** Real-time tespit sonucunu yansıt; null = hiçbir köşe tespit edilemedi. */
+    /** Marker merkezleri yeşil çerçeve köşelerine yeterince yakın mı (KagitOkuActivity hesaplar). */
+    private boolean guideCornersAligned = true;
+
+    private void refreshMainStatus() {
+        if (processingText != null) return;
+        int found = countDetected();
+        if (!tiltOk()) {
+            statusText = "Telefonu düz tutun (eğim bozuk)";
+            return;
+        }
+        if (found == 4 && !guideCornersAligned) {
+            statusText = "Siyah kareleri çerçeve köşelerine oturtun";
+            return;
+        }
+        if (found == 4) {
+            statusText = countdown > 0
+                ? "Hazır! " + countdown + " — eğim + köşe sabit (3 sn)"
+                : "4 köşe + eğim tamam — 3 sn sabit tutun";
+            return;
+        }
+        if (found == 0) {
+            statusText = "Formu çerçevenin içine yerleştirin";
+            return;
+        }
+        statusText = found + "/4 köşe bulundu — formu düzgün hizalayın";
+    }
+
+    /** Köşe blob merkezleri rehber çerçeveye yakın mı — yakın değilse geri sayım başlamaz. */
+    public void setGuideCornersAligned(boolean aligned) {
+        if (guideCornersAligned == aligned) return;
+        guideCornersAligned = aligned;
+        refreshMainStatus();
+        invalidate();
+    }
+
     public void setDetectedCorners(boolean tl, boolean tr, boolean bl, boolean br) {
-        boolean changed = markerOk[0] != tl || markerOk[1] != tr
-                || markerOk[2] != bl || markerOk[3] != br;
         markerOk[0] = tl; markerOk[1] = tr;
         markerOk[2] = bl; markerOk[3] = br;
-        if (allOk()) {
-            statusText = "Hazır — tutmaya devam edin";
-        } else {
-            int found = (tl?1:0) + (tr?1:0) + (bl?1:0) + (br?1:0);
-            statusText = "4 köşe siyah kareyi rehberin içine getirin (" + found + "/4)";
-        }
-        if (changed) invalidate();
+        refreshMainStatus();
+        invalidate();
+    }
+
+    public void setCountdown(int seconds) {
+        if (this.countdown == seconds) return;
+        this.countdown = seconds;
+        refreshMainStatus();
+        invalidate();
+    }
+
+    public void setProcessingText(String text) {
+        this.processingText = text;
+        invalidate();
+    }
+
+    /**
+     * Cihazın eğimini güncelle (derece cinsinden).
+     * pitch: telefonu öne/arkaya yatırma; roll: sağa/sola yatırma.
+     * Telefonu yere paralel kağıda dik tutuyorsa ikisi de ~0 olmalı.
+     */
+    public void setTilt(float pitchDeg, float rollDeg) {
+        this.pitchDeg = pitchDeg;
+        this.rollDeg = rollDeg;
+        this.tiltAvailable = true;
+        refreshMainStatus();
+        invalidate();
+    }
+
+    /** Eğim toleranslı seviyede mi? */
+    public float pitchDeg() { return pitchDeg; }
+    public float rollDeg()  { return rollDeg; }
+
+    public boolean tiltOk() {
+        if (!tiltAvailable) return true;
+        return Math.abs(pitchDeg) < TILT_OK_DEG && Math.abs(rollDeg) < TILT_OK_DEG;
+    }
+
+    /**
+     * Tespit edilen marker'ların EKRAN-uzayındaki konumlarını güncelle.
+     * Sıra: TL, TR, BL, BR. null geçilirse o köşe çizilmez.
+     */
+    public void setDetectedScreenPositions(PointF tl, PointF tr, PointF bl, PointF br) {
+        detectedScreenPos[0] = tl;
+        detectedScreenPos[1] = tr;
+        detectedScreenPos[2] = bl;
+        detectedScreenPos[3] = br;
+        invalidate();
     }
 
     public boolean allOk() {
         return markerOk[0] && markerOk[1] && markerOk[2] && markerOk[3];
     }
 
-    /** Rehber dikdörtgen sınırlarını [TL_x0,y0,x1,y1, TR_..., BL_..., BR_...] verir. */
-    public RectF[] getGuideRects() {
+    private int countDetected() {
+        int n = 0;
+        for (boolean b : markerOk) if (b) n++;
+        return n;
+    }
+
+    /**
+     * Ekran ortasında A4 oranlı dikdörtgeni hesaplar.
+     * Genişlik / yükseklik ekrana göre maksimum sığacak şekilde ayarlanır.
+     */
+    public RectF getFrameRect() {
         int w = getWidth();
         int h = getHeight();
-        if (w == 0 || h == 0) return new RectF[0];
-        float pad = dp(20);
-        // Rehber kutucuğu boyutu: ekranın ~%14'ü kadar
-        float size = Math.min(w, h) * 0.14f;
-        return new RectF[]{
-            new RectF(pad,           pad,           pad + size,        pad + size),
-            new RectF(w - pad - size, pad,           w - pad,           pad + size),
-            new RectF(pad,           h - pad - size, pad + size,        h - pad),
-            new RectF(w - pad - size, h - pad - size, w - pad,           h - pad)
-        };
+        if (w <= 0 || h <= 0) return new RectF();
+
+        float maxW = w * (1f - 2f * MARGIN_RATIO);
+        float maxH = h * (1f - 2f * MARGIN_RATIO) - dp(80); // alt status bar payı
+
+        // A4 portrait: width / height = A4_RATIO
+        // Önce yüksekliğe göre genişlik hesapla, sığmıyorsa genişliğe göre yükseklik
+        float frameH = maxH;
+        float frameW = frameH * A4_RATIO;
+        if (frameW > maxW) {
+            frameW = maxW;
+            frameH = frameW / A4_RATIO;
+        }
+        float left = (w - frameW) / 2f;
+        float top  = (h - frameH) / 2f - dp(20);
+        return new RectF(left, top, left + frameW, top + frameH);
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        RectF[] rects = getGuideRects();
-        if (rects.length != 4) return;
+        int w = getWidth();
+        int h = getHeight();
+        if (w <= 0 || h <= 0) return;
 
-        // Köşe rehberlerinin DIŞINI hafif karart (içini boş bırak — dikkatçeker)
-        // Aslında karartma yok, sadece köşeleri vurgula
-        float cornerLen = dp(20);
-        float strokeW = dp(3);
+        RectF frame = getFrameRect();
+        if (frame.width() <= 0 || frame.height() <= 0) return;
+
+        // ── Dış alanı karart (kadraj efekti) ──
+        // Path: tüm ekran - dikdörtgen iç bölgesi
+        Path outside = new Path();
+        outside.addRect(0, 0, w, h, Path.Direction.CW);
+        outside.addRect(frame, Path.Direction.CCW);
+        canvas.drawPath(outside, dimPaint);
+
+        // ── Çerçeve sınırı: yeşile dönmesi için 4 köşe + eğim + hizalama hepsi tamam olmalı.
+        //    Aksi halde beyaz kalır → kullanıcı "henüz hazır değil" sinyalini çerçeveden de görür.
+        boolean readyVisual = allOk() && tiltOk() && guideCornersAligned;
+        Paint framePaint = readyVisual ? frameOkPaint : frameBadPaint;
+        canvas.drawRect(frame, framePaint);
+
+        // ── 4 köşede L-şeklinde marker göstergeleri (dikdörtgenin köşelerinde) ──
+        float armLen = Math.min(frame.width(), frame.height()) * 0.10f;
+        float strokeW = dp(5);
+        guidePaint.setStrokeWidth(strokeW);
+        // i = 0:TL, 1:TR, 2:BL, 3:BR
         for (int i = 0; i < 4; i++) {
-            RectF r = rects[i];
-            int color = markerOk[i] ? 0xFF4CAF50 : 0xFFE53935; // yeşil / kırmızı
+            int color = markerOk[i] ? 0xFF4CAF50 : 0xFFFF5252;
             guidePaint.setColor(color);
-            guidePaint.setStrokeWidth(strokeW);
-            // L-şeklinde köşe işareti (dikdörtgen yerine 4 köşesinde L)
-            // Üst-sol köşe
-            canvas.drawLine(r.left, r.top, r.left + cornerLen, r.top, guidePaint);
-            canvas.drawLine(r.left, r.top, r.left, r.top + cornerLen, guidePaint);
-            // Üst-sağ köşe
-            canvas.drawLine(r.right, r.top, r.right - cornerLen, r.top, guidePaint);
-            canvas.drawLine(r.right, r.top, r.right, r.top + cornerLen, guidePaint);
-            // Alt-sol köşe
-            canvas.drawLine(r.left, r.bottom, r.left + cornerLen, r.bottom, guidePaint);
-            canvas.drawLine(r.left, r.bottom, r.left, r.bottom - cornerLen, guidePaint);
-            // Alt-sağ köşe
-            canvas.drawLine(r.right, r.bottom, r.right - cornerLen, r.bottom, guidePaint);
-            canvas.drawLine(r.right, r.bottom, r.right, r.bottom - cornerLen, guidePaint);
+            float cx, cy, dx, dy;
+            switch (i) {
+                case 0: cx = frame.left;  cy = frame.top;    dx = +1; dy = +1; break;
+                case 1: cx = frame.right; cy = frame.top;    dx = -1; dy = +1; break;
+                case 2: cx = frame.left;  cy = frame.bottom; dx = +1; dy = -1; break;
+                default:cx = frame.right; cy = frame.bottom; dx = -1; dy = -1; break;
+            }
+            canvas.drawLine(cx, cy, cx + dx * armLen, cy, guidePaint);
+            canvas.drawLine(cx, cy, cx, cy + dy * armLen, guidePaint);
 
-            // Tespit edildiğinde küçük bir ✓ noktası
+            // Tespit edildiğinde köşe noktasına nokta koy
             if (markerOk[i]) {
                 dotPaint.setColor(0xFF4CAF50);
-                canvas.drawCircle(r.centerX(), r.centerY(), dp(8), dotPaint);
+                canvas.drawCircle(cx, cy, dp(9), dotPaint);
                 dotPaint.setColor(Color.WHITE);
-                canvas.drawCircle(r.centerX(), r.centerY(), dp(3), dotPaint);
+                canvas.drawCircle(cx, cy, dp(3.5f), dotPaint);
             }
         }
 
-        // Status metni alt orta — yarı saydam siyah arka plan üzerine
-        float ty = getHeight() - dp(40);
-        float textWidth = textPaint.measureText(statusText);
-        float pad = dp(12);
+        // ── Status metni (alt orta) ──
+        String shown = processingText != null ? processingText : statusText;
+        float ty = h - dp(34);
+        float textW = textPaint.measureText(shown);
+        float pad = dp(14);
         canvas.drawRoundRect(
-            getWidth() / 2f - textWidth / 2f - pad,
-            ty - dp(20),
-            getWidth() / 2f + textWidth / 2f + pad,
-            ty + dp(8),
-            dp(8), dp(8), shadowPaint);
-        canvas.drawText(statusText, getWidth() / 2f, ty, textPaint);
+            w / 2f - textW / 2f - pad,
+            ty - dp(22),
+            w / 2f + textW / 2f + pad,
+            ty + dp(10),
+            dp(10), dp(10), shadowPaint);
+        canvas.drawText(shown, w / 2f, ty, textPaint);
+
+        // ── Üstte küçük ipucu metni (yalnız 0 köşe bulunduğunda; tilt göstergesi yoksa) ──
+        if (processingText == null && countDetected() == 0 && !tiltAvailable) {
+            String hint = "Optik formu kareye sığdırın";
+            float hintW = textPaint.measureText(hint);
+            float hy = frame.top - dp(18);
+            canvas.drawRoundRect(
+                w / 2f - hintW / 2f - dp(10),
+                hy - dp(20),
+                w / 2f + hintW / 2f + dp(10),
+                hy + dp(8),
+                dp(8), dp(8), shadowPaint);
+            canvas.drawText(hint, w / 2f, hy, textPaint);
+        }
+
+        // ── Geri sayım sayısı (ekran ortasında büyük) ──
+        // Sadece üç koşul birden tamamsa göster: 4 köşe + eğim OK + rehbere oturmuş.
+        if (processingText == null && countdown > 0 && readyVisual) {
+            canvas.drawText(String.valueOf(countdown),
+                w / 2f, h / 2f + dp(40), countdownPaint);
+        }
+
+        // ── Tespit edilen marker'ların ekran konumlarında dolgu daire ──
+        // Yeşil = rehbere oturmuş; turuncu = bulunmuş ama köşelere uzak (kullanıcı kaydırmalı).
+        int dotFill = guideCornersAligned ? 0xFF4CAF50 : 0xFFFFC107;
+        for (int i = 0; i < 4; i++) {
+            PointF p = detectedScreenPos[i];
+            if (p == null) continue;
+            dotPaint.setColor(0xCC000000);
+            canvas.drawCircle(p.x, p.y, dp(11), dotPaint);
+            dotPaint.setColor(dotFill);
+            canvas.drawCircle(p.x, p.y, dp(8), dotPaint);
+            dotPaint.setColor(Color.WHITE);
+            canvas.drawCircle(p.x, p.y, dp(2.5f), dotPaint);
+        }
+
+        // ── Tilt level (su düzeci) — sağ-üst köşede ──
+        // İşleme/çekim mesajı varken gizleriz (kullanıcı zaten odaklanmış olur).
+        if (tiltAvailable && processingText == null) {
+            drawTiltLevel(canvas, w);
+        }
+    }
+
+    /**
+     * Üst-orta konumda büyük bir bubble level (su düzeci) çizer.
+     * Eğim 8°'nin altındayken yeşil, üzerindeyken kırmızı yanıp söner.
+     * Kabarcık merkezi yakaladıkça kullanıcı çekim için doğru pozisyonu bulmuş olur.
+     */
+    private void drawTiltLevel(Canvas canvas, int w) {
+        boolean ok = tiltOk();
+        float radius = dp(54);
+        float cx = w / 2f;
+        float cy = radius + dp(24);
+
+        // Dış glow halkası (eğim bozukken pulse) — büyük + saydam, kırmızı/yeşil
+        long t = System.currentTimeMillis();
+        float pulse = ok ? 0f : (float) (0.5 + 0.5 * Math.sin(t / 220.0));
+        int glowAlpha = ok ? 0x55 : (0x55 + (int)(pulse * 0x80));
+        Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
+        glow.setStyle(Paint.Style.STROKE);
+        glow.setStrokeWidth(dp(6));
+        int baseColor = ok ? 0x4CAF50 : 0xFF5252;
+        glow.setColor((glowAlpha << 24) | baseColor);
+        canvas.drawCircle(cx, cy, radius + dp(6), glow);
+
+        // Şeffaf siyah arka plan dolgusu
+        Paint bgRing = new Paint(Paint.ANTI_ALIAS_FLAG);
+        bgRing.setStyle(Paint.Style.FILL);
+        bgRing.setColor(0xB3000000);
+        canvas.drawCircle(cx, cy, radius, bgRing);
+
+        // Dış kontur
+        Paint ringStroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ringStroke.setStyle(Paint.Style.STROKE);
+        ringStroke.setStrokeWidth(dp(2.5f));
+        ringStroke.setColor(ok ? 0xCC4CAF50 : 0xCCFF5252);
+        canvas.drawCircle(cx, cy, radius, ringStroke);
+
+        // Hedef halka (orta — kabarcığın oturması gereken alan)
+        Paint targetRing = new Paint(Paint.ANTI_ALIAS_FLAG);
+        targetRing.setStyle(Paint.Style.STROKE);
+        targetRing.setStrokeWidth(dp(2));
+        targetRing.setColor(0xFFFFFFFF);
+        float targetR = dp(13);
+        canvas.drawCircle(cx, cy, targetR, targetRing);
+
+        // Çapraz çizgiler (referans)
+        targetRing.setStrokeWidth(dp(1));
+        targetRing.setColor(0x77FFFFFF);
+        canvas.drawLine(cx - radius * 0.78f, cy, cx + radius * 0.78f, cy, targetRing);
+        canvas.drawLine(cx, cy - radius * 0.78f, cx, cy + radius * 0.78f, targetRing);
+
+        // Hareketli kabarcık (eğime göre kayar)
+        // Maksimum 25 derece eğimde halkanın kenarına ulaşsın
+        float maxDeg = 25f;
+        float dx = clamp(rollDeg / maxDeg, -1f, 1f) * (radius - dp(8));
+        float dy = clamp(pitchDeg / maxDeg, -1f, 1f) * (radius - dp(8));
+        // Pitch yönünü ters çevir: telefon öne yatınca kabarcık aşağı kaysın
+        dy = -dy;
+
+        Paint bubble = new Paint(Paint.ANTI_ALIAS_FLAG);
+        bubble.setStyle(Paint.Style.FILL);
+        bubble.setColor(ok ? 0xFF4CAF50 : 0xFFFF5252);
+        canvas.drawCircle(cx + dx, cy + dy, dp(10), bubble);
+        bubble.setColor(0x99FFFFFF);
+        canvas.drawCircle(cx + dx, cy + dy, dp(10), bubble);
+
+        // Etiket — eğim açısı + durum
+        Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
+        lbl.setColor(ok ? 0xFFB9F6CA : 0xFFFFCDD2);
+        lbl.setTextSize(dp(12));
+        lbl.setTextAlign(Paint.Align.CENTER);
+        lbl.setFakeBoldText(true);
+        String degText = String.format(java.util.Locale.US, "%.0f° / %.0f°",
+            Math.abs(pitchDeg), Math.abs(rollDeg));
+        canvas.drawText(degText, cx, cy + radius + dp(16), lbl);
+
+        // İkinci satır: durum metni
+        Paint sub = new Paint(Paint.ANTI_ALIAS_FLAG);
+        sub.setColor(0xFFFFFFFF);
+        sub.setTextSize(dp(11));
+        sub.setTextAlign(Paint.Align.CENTER);
+        sub.setFakeBoldText(true);
+        canvas.drawText(ok ? "EĞİM TAMAM" : "EĞİMİ DÜZELT",
+            cx, cy + radius + dp(31), sub);
+        if (!ok) postInvalidateOnAnimation(); // pulse animasyonu için
+    }
+
+    private float clamp(float v, float lo, float hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
     }
 
     private float dp(float v) {

@@ -24,6 +24,7 @@ public class PdfGenerator {
 
     public static final float MARKER_PT = 18f; // corner marker size in pt
     public static final float MARKER_PADDING_PT = 10f; // padding from page edge in pt
+    public static final float MARKER_PAD_PT = MARKER_PADDING_PT; // alias (Cloud AI uyumluluğu)
 
     public static int getPdfWidth(OptikForm form) {
         boolean landscape = Constants.YON_YATAY.equals(form.yon);
