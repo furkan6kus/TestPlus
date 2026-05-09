@@ -449,6 +449,13 @@ public class OmrProcessor {
                             .append(Math.round(ix)).append(",")
                             .append(Math.round(iy)).append(") ");
                     }
+                    if (logCoords) {
+                        coordLog.append(opts[o]).append("→pdf(")
+                            .append(Math.round(pdfPt[0])).append(",")
+                            .append(Math.round(pdfPt[1])).append(")img(")
+                            .append(Math.round(ix)).append(",")
+                            .append(Math.round(iy)).append(") ");
+                    }
                     // Bubble merkezi etrafında küçük bir gridde her noktada
                     // BÜYÜK bir dairesel bölgenin ORTALAMA parlaklığını al;
                     // aday noktalardan en koyu (ortalama olarak) olanı seç.
@@ -817,6 +824,40 @@ public class OmrProcessor {
         if (top >= bottom || left >= right) {
             return new int[]{0, 0, imgW, imgH};
         }
+
+        // Rafine sol/sağ kenar: spiral cilt veya koyu kenar şeritlerini atla.
+        // Sütunun orta %60'ına bak; eğer o sütun %88+ parlak ise gerçek kağıt kenarı.
+        // Spiral bobin: bobin telleri arası ~%60-75 parlak → eşiğin altında → atlanır.
+        // Normal beyaz kağıt: ~%95+ parlak → eşiği geçer → kenar belirlenir.
+        int midTop    = top + (bottom - top) / 5;
+        int midBottom = bottom - (bottom - top) / 5;
+        int refStep   = Math.max(1, (midBottom - midTop) / 80);
+        int maxRefine = Math.min(120, (right - left) / 4);
+        float solidThresh = 0.88f;
+
+        for (int x = left + 1; x < left + maxRefine; x++) {
+            int brightCnt = 0, totalCnt = 0;
+            for (int y = midTop; y < midBottom; y += refStep) {
+                if (pixelLuma(pixels[y * imgW + x]) > PAPER_BRIGHT_THRESHOLD) brightCnt++;
+                totalCnt++;
+            }
+            if (totalCnt > 0 && (float) brightCnt / totalCnt >= solidThresh) {
+                left = x;
+                break;
+            }
+        }
+        for (int x = right - 1; x > right - maxRefine; x--) {
+            int brightCnt = 0, totalCnt = 0;
+            for (int y = midTop; y < midBottom; y += refStep) {
+                if (pixelLuma(pixels[y * imgW + x]) > PAPER_BRIGHT_THRESHOLD) brightCnt++;
+                totalCnt++;
+            }
+            if (totalCnt > 0 && (float) brightCnt / totalCnt >= solidThresh) {
+                right = x;
+                break;
+            }
+        }
+
         // 2% genişlet — köşe markerları kağıt kenarına çok yakın
         int padX = Math.max(2, (right - left) / 50);
         int padY = Math.max(2, (bottom - top) / 50);
@@ -1525,5 +1566,79 @@ public class OmrProcessor {
     /** Canlı önizlemede gölge eşiği — geri sayım / otomatik çekim durdurulur. */
     public static boolean isPreviewBlockedByShadow(int[] argbPixels, int imgW, int imgH) {
         return previewIlluminationSpread(argbPixels, imgW, imgH) >= SHADOW_SPREAD_THRESHOLD;
+    }
+
+    /**
+     * Ham fotoğrafı perspektif düzeltilmiş (CamScanner benzeri) bitmap'e çevirir.
+     * 4 köşe marker bulunursa homografi warp uygulanır; bulunamazsa kağıt sınırına kırpar.
+     * @param raw   kaynak bitmap (herhangi bir yön/boyut)
+     * @param pdfW  form PDF genişliği (pt) — marker boyutu hesabı için
+     * @param pdfH  form PDF yüksekliği (pt)
+     * @return perspektif düzeltilmiş bitmap veya raw (başarısızlıkta)
+     */
+    public static Bitmap correctPerspective(Bitmap raw, int pdfW, int pdfH) {
+        if (raw == null) return null;
+        int imgW = raw.getWidth();
+        int imgH = raw.getHeight();
+
+        int[] pixels = new int[imgW * imgH];
+        raw.getPixels(pixels, 0, imgW, 0, 0, imgW, imgH);
+
+        int[] paper = detectPaperBounds(pixels, imgW, imgH);
+        int pl = paper[0], ptop = paper[1], pr = paper[2], pb = paper[3];
+        int paperW = pr - pl;
+        int paperH = pb - ptop;
+        if (paperW < imgW / 4 || paperH < imgH / 4) {
+            pl = 0; ptop = 0; pr = imgW; pb = imgH;
+            paperW = imgW; paperH = imgH;
+        }
+
+        int expectedMarkerPx = Math.max(8, Math.round(paperW * (PdfGenerator.MARKER_PT / (float) pdfW)));
+        PointF[] corners = findFourCornerMarkersInPaperRect(pixels, imgW, imgH,
+            pl, ptop, pr, pb, paperW, expectedMarkerPx, pdfW, pdfH);
+        PointF tl = corners[0], tr = corners[1], bl = corners[2], br = corners[3];
+
+        boolean allFound = tl != null && tr != null && bl != null && br != null;
+        if (allFound) {
+            float topW = ptDist(tl, tr);
+            float botW = ptDist(bl, br);
+            float leftH = ptDist(tl, bl);
+            float rightH = ptDist(tr, br);
+            int outW = Math.round(Math.max(topW, botW));
+            int outH = Math.round(Math.max(leftH, rightH));
+
+            if (outW >= 80 && outH >= 80) {
+                float[] src = {tl.x, tl.y, tr.x, tr.y, bl.x, bl.y, br.x, br.y};
+                float[] dst = {0, 0, outW, 0, 0, outH, outW, outH};
+                Matrix m = new Matrix();
+                if (m.setPolyToPoly(src, 0, dst, 0, 4)) {
+                    try {
+                        Bitmap out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
+                        android.graphics.Canvas c = new android.graphics.Canvas(out);
+                        c.drawBitmap(raw, m, null);
+                        Log.i(TAG, "correctPerspective: warp OK "
+                            + imgW + "x" + imgH + " → " + outW + "x" + outH);
+                        return out;
+                    } catch (Exception e) {
+                        Log.w(TAG, "correctPerspective: warp exception — fallback crop", e);
+                    }
+                }
+            }
+        }
+
+        // Fallback: kağıt sınırına kırp
+        int cropW = Math.min(paperW, imgW - pl);
+        int cropH = Math.min(paperH, imgH - ptop);
+        if (cropW > 0 && cropH > 0 && (cropW < imgW || cropH < imgH)) {
+            Log.i(TAG, "correctPerspective: crop fallback pl=" + pl + " ptop=" + ptop
+                + " w=" + cropW + " h=" + cropH);
+            return Bitmap.createBitmap(raw, pl, ptop, cropW, cropH);
+        }
+        return raw;
+    }
+
+    private static float ptDist(PointF a, PointF b) {
+        float dx = b.x - a.x, dy = b.y - a.y;
+        return (float) Math.sqrt(dx * dx + dy * dy);
     }
 }
