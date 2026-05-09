@@ -224,6 +224,13 @@ public class OmrProcessor {
         Log.i(TAG, "[3/6] Köşe arama (geniş pencere + tamamlama) | bulunan: " + found + "/4");
         Log.i(TAG, "      TL=" + fmtPt(tlImg) + "  TR=" + fmtPt(trImg)
             + "  BL=" + fmtPt(blImg) + "  BR=" + fmtPt(brImg));
+        // Beklenen marker konumları (kağıt sınırına göre)
+        float mcExpPx = (PdfGenerator.MARKER_PADDING_PT + PdfGenerator.MARKER_PT / 2f)
+                        * paperW / (float) pdfWidthPt;
+        Log.i(TAG, "      Beklenen: TL≈(" + Math.round(pl + mcExpPx) + "," + Math.round(ptop + mcExpPx) + ")"
+            + " TR≈(" + Math.round(pr - mcExpPx) + "," + Math.round(ptop + mcExpPx) + ")"
+            + " BL≈(" + Math.round(pl + mcExpPx) + "," + Math.round(pb - mcExpPx) + ")"
+            + " BR≈(" + Math.round(pr - mcExpPx) + "," + Math.round(pb - mcExpPx) + ")");
 
         // ── Adım 4: homografi kur (eğer 4 köşe makul dikdörtgen oluşturuyorsa) ─
         float mc = PdfGenerator.MARKER_PADDING_PT + PdfGenerator.MARKER_PT / 2f;
@@ -313,6 +320,10 @@ public class OmrProcessor {
                 }
 
                 float[] brightnesses = new float[opts.length];
+                // İlk 2 soru için örnekleme koordinatlarını logla (tanı amaçlı)
+                boolean logCoords = (q < 2);
+                StringBuilder coordLog = logCoords ? new StringBuilder() : null;
+                if (logCoords) coordLog.append("  [COORD] Q").append(q + 1).append(": ");
                 for (int o = 0; o < opts.length; o++) {
                     float[] pdfPt = PdfGenerator.getBubbleCenter(alan, q, o, pdfScale);
                     float ix, iy;
@@ -324,6 +335,13 @@ public class OmrProcessor {
                         // Fallback: kağıt-sınırlı lineer ölçek
                         ix = finalPl + pdfPt[0] * finalPaperW / pdfWidthPt;
                         iy = finalPtop + pdfPt[1] * finalPaperH / pdfHeightPt;
+                    }
+                    if (logCoords) {
+                        coordLog.append(opts[o]).append("→pdf(")
+                            .append(Math.round(pdfPt[0])).append(",")
+                            .append(Math.round(pdfPt[1])).append(")img(")
+                            .append(Math.round(ix)).append(",")
+                            .append(Math.round(iy)).append(") ");
                     }
                     // Bubble merkezi etrafında küçük bir gridde her noktada
                     // BÜYÜK bir dairesel bölgenin ORTALAMA parlaklığını al;
@@ -338,6 +356,7 @@ public class OmrProcessor {
                     // altına kaymasını engeller.
                     brightnesses[o] = raw / whitePoint;
                 }
+                if (logCoords) Log.i(TAG, coordLog.toString());
 
                 // En koyu ve İKİNCİ EN KOYU şıkları bul.
                 // Bu, ortalama vs minimum'dan çok daha sağlam:
