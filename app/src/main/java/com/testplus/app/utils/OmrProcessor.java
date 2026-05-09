@@ -526,11 +526,15 @@ public class OmrProcessor {
         return maxQ - minQ;
     }
 
+    // Minimum luma to be counted as paper background (not printed content)
+    private static final int SHADOW_BG_MIN_LUMA = 90;
+
     private static float meanNormalizedLuma(int[] pixels, int imgW, int imgH,
             int x0, int y0, int x1, int y1) {
         int step = Math.max(1, Math.min(x1 - x0, y1 - y0) / 14);
-        long sum = 0;
-        int cnt = 0;
+        long bgSum = 0;
+        int bgCnt = 0;
+        int totalCnt = 0;
         for (int y = y0; y < y1 && y < imgH; y += step) {
             int rowBase = y * imgW;
             for (int x = x0; x < x1 && x < imgW; x += step) {
@@ -538,12 +542,17 @@ public class OmrProcessor {
                 int lum = ((p >> 16 & 0xFF) * 299
                          + (p >>  8 & 0xFF) * 587
                          + (p       & 0xFF) * 114) / 1000;
-                sum += lum;
-                cnt++;
+                totalCnt++;
+                if (lum >= SHADOW_BG_MIN_LUMA) {
+                    bgSum += lum;
+                    bgCnt++;
+                }
             }
         }
-        if (cnt == 0) return 0.5f;
-        return (sum / (float) cnt) / 255f;
+        // If fewer than 10% of pixels qualify as background, the cell is
+        // dominated by printed content — treat it as neutral rather than "dark".
+        if (bgCnt < Math.max(1, totalCnt / 10)) return 0.75f;
+        return (bgSum / (float) bgCnt) / 255f;
     }
 
     /**
