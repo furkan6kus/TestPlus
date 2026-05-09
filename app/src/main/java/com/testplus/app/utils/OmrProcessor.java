@@ -1139,7 +1139,6 @@ public class OmrProcessor {
     private static PointF[] findFourCornerMarkersInPaperRect(int[] pixels, int imgW, int imgH,
             int pl, int ptop, int pr, int pb, int paperW, int expectedMarkerPx) {
         int paperH = pb - ptop;
-        int edgePad = Math.max(14, Math.min(paperW, paperH) / 28);
 
         // Marker merkezi kağıt kenarından ~19pt uzakta (MARKER_PADDING_PT + MARKER_PT/2 = 19pt).
         // mcPx = 19/18 × markerPx — bu, marker'ın kağıt kenarına göre beklenen piksel ofseti.
@@ -1153,25 +1152,28 @@ public class OmrProcessor {
         int sw = Math.max(56, mcPx + expectedMarkerPx * 2);
         int sh = Math.max(56, mcPx + expectedMarkerPx * 2);
 
-        int tlX0 = Math.max(0, pl - edgePad);
-        int tlY0 = Math.max(0, ptop - edgePad);
+        // Arama pencereleri SADECE kağıt içinde kalmalı.
+        // edgePad dışarı taşıyordu: kamera arka planı (~siyah) pass-1 merkezini
+        // köşeye çekiyor, gerçek siyah kare bulunamıyordu.
+        int tlX0 = Math.max(0, pl);
+        int tlY0 = Math.max(0, ptop);
         int tlX1 = pl + sw;
         int tlY1 = ptop + sh;
 
         int trX0 = Math.max(0, pr - sw);
-        int trY0 = Math.max(0, ptop - edgePad);
-        int trX1 = Math.min(imgW, pr + edgePad);
+        int trY0 = Math.max(0, ptop);
+        int trX1 = Math.min(imgW, pr);
         int trY1 = ptop + sh;
 
-        int blX0 = Math.max(0, pl - edgePad);
+        int blX0 = Math.max(0, pl);
         int blY0 = Math.max(0, pb - sh);
         int blX1 = pl + sw;
-        int blY1 = Math.min(imgH, pb + edgePad);
+        int blY1 = Math.min(imgH, pb);
 
         int brX0 = Math.max(0, pr - sw);
         int brY0 = Math.max(0, pb - sh);
-        int brX1 = Math.min(imgW, pr + edgePad);
-        int brY1 = Math.min(imgH, pb + edgePad);
+        int brX1 = Math.min(imgW, pr);
+        int brY1 = Math.min(imgH, pb);
 
         PointF[] corners = new PointF[4];
         corners[0] = findMarkerCenter(pixels, imgW, imgH,
