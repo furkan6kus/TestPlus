@@ -1022,8 +1022,11 @@ public class OmrProcessor {
         float ty = (cornerIndex == 0 || cornerIndex == 1) ? ptop : pb;
         float dx = p.x - tx;
         float dy = p.y - ty;
-        float maxDist = Math.max(expectedMarkerPx * 7f,
-            Math.min(pr - pl, pb - ptop) * 0.30f);
+        // Marker beklenen konumunun euclidean mesafesi = mcPx*√2 ≈ markerPx*1.49.
+        // ±3×markerPx toleransla kabul aralığı = markerPx * (1.49 + 3) * 1.41 ≈ markerPx * 6.3.
+        // Eski 7.0 katsayısı + %30 kağıt genişliği (600px!) yanlış konumları da kabul ediyordu.
+        float maxDist = Math.max(expectedMarkerPx * 5.5f,
+            Math.min(pr - pl, pb - ptop) * 0.15f);
         return dx * dx + dy * dy <= maxDist * maxDist;
     }
 
@@ -1117,9 +1120,19 @@ public class OmrProcessor {
     private static PointF[] findFourCornerMarkersInPaperRect(int[] pixels, int imgW, int imgH,
             int pl, int ptop, int pr, int pb, int paperW, int expectedMarkerPx) {
         int paperH = pb - ptop;
-        int sw = Math.max(56, paperW / 4);
-        int sh = Math.max(56, paperH / 4);
         int edgePad = Math.max(14, Math.min(paperW, paperH) / 28);
+
+        // Marker merkezi kağıt kenarından ~19pt uzakta (MARKER_PADDING_PT + MARKER_PT/2 = 19pt).
+        // mcPx = 19/18 × markerPx — bu, marker'ın kağıt kenarına göre beklenen piksel ofseti.
+        int mcPx = Math.max(16, Math.round(expectedMarkerPx * (19f / 18f)));
+
+        // Sıkı arama penceresi: sadece marker'ın gerçekte olduğu bölge.
+        // Eski paperW/4 (~500px) çok büyüktü — cevap ızgarası ve diğer koyu içerik
+        // pass-1 merkezini çekip homografiyi bozuyordu.
+        // Yeni pencere: kağıt kenarından marker boyutunun 2 katı kadar öteye (mcPx+2×markerPx).
+        // Form içeriği genellikle ~60pt uzakta başlar; bu pencere oraya kadar ulaşmaz.
+        int sw = Math.max(56, mcPx + expectedMarkerPx * 2);
+        int sh = Math.max(56, mcPx + expectedMarkerPx * 2);
 
         int tlX0 = Math.max(0, pl - edgePad);
         int tlY0 = Math.max(0, ptop - edgePad);
