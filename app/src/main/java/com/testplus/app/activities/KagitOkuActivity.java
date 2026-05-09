@@ -299,7 +299,7 @@ public class KagitOkuActivity extends AppCompatActivity {
             } else if (!alignmentOverlay.allOk()) {
                 msg = "4 siyah köşe karesi net görünmüyor. Işığı ve kadrajı düzeltip tekrar deneyin.";
             } else if (!alignmentOverlay.areGuideCornersAligned()) {
-                msg = "Siyah kareleri yeşil çerçeve köşelerine oturtun; çerçeve tam yeşilken çekin.";
+                msg = "Kağıdı biraz daha yakın tutun — yeşil çerçeve doluncaya kadar yaklaşın, sonra bekleyin.";
             } else {
                 msg = "Çerçeve yeşil olmadan çekilemez. Hizalama ve ışığı kontrol edin.";
             }
@@ -967,82 +967,53 @@ public class KagitOkuActivity extends AppCompatActivity {
     /** Hizalama neden sağlanmadı? Kullanıcı yönlendirmesi için kısa metin döner. */
     private String describeAlignmentMiss(PointF[] screenCorners) {
         RectF frame = computeOverlayGuideFrame();
-        if (frame == null || screenCorners == null) return "kareler çerçeveye oturmamış";
-        float pdfW = (cachedForm != null) ? PdfGenerator.getPdfWidth(cachedForm) : 595f;
-        float pdfH = (cachedForm != null) ? PdfGenerator.getPdfHeight(cachedForm) : 842f;
-        float markerCenterPt = PdfGenerator.MARKER_PADDING_PT + PdfGenerator.MARKER_PT / 2f;
-        float insetX = frame.width()  * (markerCenterPt / pdfW);
-        float insetY = frame.height() * (markerCenterPt / pdfH);
-        float[] tx = {frame.left + insetX, frame.right - insetX, frame.left + insetX, frame.right - insetX};
-        float[] ty = {frame.top + insetY,  frame.top + insetY,   frame.bottom - insetY, frame.bottom - insetY};
-        StringBuilder sb = new StringBuilder("kareler hizasız [");
-        for (int i = 0; i < 4; i++) {
-            PointF p = screenCorners[i];
-            if (p == null) { sb.append("?"); }
-            else {
-                float dx = p.x - tx[i];
-                float dy = p.y - ty[i];
-                float d = (float) Math.sqrt(dx * dx + dy * dy);
-                sb.append(String.format(java.util.Locale.US, "%.0f", d));
-            }
-            if (i < 3) sb.append(",");
-        }
-        sb.append("px]");
-        return sb.toString();
+        if (frame == null || screenCorners == null) return "kareler tespit edilemedi";
+        // Size-based gate: compute how much of the guide frame the form fills
+        boolean anyNull = false;
+        for (PointF p : screenCorners) if (p == null) { anyNull = true; break; }
+        if (anyNull) return "köşe(ler) bulunamadı";
+        float capturedW = Math.min(screenCorners[1].x, screenCorners[3].x)
+            - Math.max(screenCorners[0].x, screenCorners[2].x);
+        float capturedH = Math.min(screenCorners[2].y, screenCorners[3].y)
+            - Math.max(screenCorners[0].y, screenCorners[1].y);
+        int pct = (int) (100f * capturedW / frame.width());
+        return String.format(java.util.Locale.US,
+            "kağıt çok küçük (çerçevenin %%%d'i) — telefonu yaklaştırın", pct);
     }
 
     private boolean markersNearGuideCorners(PointF[] screenCorners) {
         RectF frame = computeOverlayGuideFrame();
         if (frame == null || frame.width() <= 1 || screenCorners == null) return false;
-        float density = getResources().getDisplayMetrics().density;
 
-        // ─── Marker'ın kağıt kenarından MERKEZ İNSET'i (PDF üzerinden hesap) ───
-        // Marker üst/sol kenardan MARKER_PADDING_PT, kendisi MARKER_PT geniş; merkezi
-        // pad + size/2 = 19pt. Çerçeve A4 (210/297) tutar; PDF orijinal de A4 (595x842pt).
-        // Bu yüzden inset oranı: 19 / pdfWidth (yatay), 19 / pdfHeight (dikey).
-        float pdfW = (cachedForm != null)
-            ? PdfGenerator.getPdfWidth(cachedForm) : 595f;
-        float pdfH = (cachedForm != null)
-            ? PdfGenerator.getPdfHeight(cachedForm) : 842f;
-        float markerCenterPt = PdfGenerator.MARKER_PADDING_PT + PdfGenerator.MARKER_PT / 2f;
-        float insetX = frame.width()  * (markerCenterPt / pdfW);
-        float insetY = frame.height() * (markerCenterPt / pdfH);
-
-        // Kağıt çerçeveye iyi oturduğunda marker'ın olması gereken ekran konumu.
-        float[] tx = {
-            frame.left  + insetX, frame.right - insetX,
-            frame.left  + insetX, frame.right - insetX
-        };
-        float[] ty = {
-            frame.top    + insetY, frame.top    + insetY,
-            frame.bottom - insetY, frame.bottom - insetY
-        };
-
-        // Tolerans: çerçevenin %8'i + min 32dp — hafif kadraj kaymasında da çekim izni
-        // (kullanıcı siyah kareleri kabaca köşeye getirdiğinde takılı kalmayı azaltır).
-        float tol = Math.max(32f * density,
-            Math.min(frame.width(), frame.height()) * 0.08f);
-        float tol2 = tol * tol;
-        for (int i = 0; i < 4; i++) {
-            PointF p = screenCorners[i];
+        // Null-check first: any missing corner = not ready
+        for (PointF p : screenCorners) {
             if (p == null) return false;
-            float dx = p.x - tx[i];
-            float dy = p.y - ty[i];
-            if (dx * dx + dy * dy > tol2) return false;
         }
-        // Ek koruma: kağıt çerçeveden çok küçük çekilmişse ptToPx düşer, OMR güvenilmez olur.
-        // İşaretler çerçeveye iyi oturduysa zaten genişlik ≈ frame.width() - 2*insetX olmalı.
-        // Küçük çekim / uzak kadraj: biraz daha toleranslı (%72) — aksi halde 4 köşe
-        // yeşil olsa bile "çerçeveye oturt" aşamasında sık sık red.
-        float expectedW = frame.width()  - 2f * insetX;
-        float expectedH = frame.height() - 2f * insetY;
+
+        // ── Size gate: the detected quad must span ≥40% of the guide frame in both
+        // dimensions. This ensures ptToPx is large enough for reliable bubble sampling
+        // (~0.8 px/pt minimum) while still being achievable at a natural holding distance
+        // (~25-35 cm) without requiring the phone to be uncomfortably close.
+        //
+        // Why NOT per-corner proximity:
+        //   At a typical 30 cm distance the paper fills ~60% of the guide frame, placing
+        //   detected markers ~60-70 dp away from the guide corners. A tight distance
+        //   tolerance (e.g. 8% = 32 dp) would ALWAYS block the countdown, making auto-
+        //   capture impossible in normal use. The guide frame is purely visual guidance;
+        //   the size threshold below is the actual quality gate.
         float capturedW = Math.min(screenCorners[1].x, screenCorners[3].x)
             - Math.max(screenCorners[0].x, screenCorners[2].x);
         float capturedH = Math.min(screenCorners[2].y, screenCorners[3].y)
             - Math.max(screenCorners[0].y, screenCorners[1].y);
-        if (capturedW < expectedW * 0.72f || capturedH < expectedH * 0.72f) {
-            return false;
-        }
+        if (capturedW < frame.width()  * 0.40f) return false;
+        if (capturedH < frame.height() * 0.40f) return false;
+
+        // ── Shape sanity: top edge must be above bottom, left of right ──────────
+        if (screenCorners[0].x >= screenCorners[1].x) return false; // TL.x < TR.x
+        if (screenCorners[2].x >= screenCorners[3].x) return false; // BL.x < BR.x
+        if (screenCorners[0].y >= screenCorners[2].y) return false; // TL.y < BL.y
+        if (screenCorners[1].y >= screenCorners[3].y) return false; // TR.y < BR.y
+
         return true;
     }
 
