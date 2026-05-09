@@ -34,6 +34,7 @@ import com.testplus.app.R;
 import com.testplus.app.database.AppDatabase;
 import com.testplus.app.database.entities.*;
 import com.testplus.app.utils.Constants;
+import com.testplus.app.utils.DocumentScanner;
 import com.testplus.app.utils.NetHesaplayici;
 import com.testplus.app.utils.OmrProcessor;
 import com.testplus.app.utils.PdfGenerator;
@@ -47,6 +48,7 @@ public class KagitOkuActivity extends AppCompatActivity {
     private static final int CAMERA_PERMISSION_REQUEST = 100;
     private static final int READ_STORAGE_PERMISSION_REQUEST = 101;
     private static final int REQUEST_GALLERY = 201;
+    private static final int REQUEST_SCAN_PREVIEW = 1002;
 
     private PreviewView previewView;
     private ScrollView manualEntryLayout;
@@ -330,7 +332,7 @@ public class KagitOkuActivity extends AppCompatActivity {
                     }
                     photoFile.delete();
                     if (bmp != null) {
-                        processBitmap(bmp);
+                        launchScanPreview(bmp);
                     } else {
                         autoCaptureTriggered = false;
                         alignedFrameCount = 0;
@@ -384,6 +386,27 @@ public class KagitOkuActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_SCAN_PREVIEW) {
+            if (resultCode == RESULT_OK) {
+                Bitmap scanned = DocumentScanner.consumePending();
+                if (scanned != null) {
+                    executor.execute(() -> processBitmap(scanned));
+                } else {
+                    autoCaptureTriggered = false;
+                    alignedFrameCount = 0;
+                    runOnUiThread(() -> Toast.makeText(this,
+                        "Tarama verisi alınamadı, tekrar deneyin.", Toast.LENGTH_SHORT).show());
+                }
+            } else {
+                // Kullanıcı "Tekrar Çek" seçti — kamera ekranına dön
+                autoCaptureTriggered = false;
+                alignedFrameCount = 0;
+                runOnUiThread(() -> {
+                    if (alignmentOverlay != null) alignmentOverlay.setProcessingText(null);
+                });
+            }
+            return;
+        }
         if (requestCode == REQUEST_GALLERY && resultCode == RESULT_OK && data != null) {
             Uri imageUri = data.getData();
             if (imageUri == null) return;
@@ -421,7 +444,7 @@ public class KagitOkuActivity extends AppCompatActivity {
                             }
                         }
                     } catch (Exception ignored) {}
-                    processBitmap(bmp);
+                    launchScanPreview(bmp);
                 } catch (Exception e) {
                     e.printStackTrace();
                     runOnUiThread(() -> Toast.makeText(this,
@@ -429,6 +452,52 @@ public class KagitOkuActivity extends AppCompatActivity {
                 }
             });
         }
+    }
+
+    // ─── Scan preview (CamScanner benzeri) ───────────────────────────────────
+
+    /**
+     * Fotoğrafı arka planda perspektif düzeltir ve ScanPreviewActivity'yi açar.
+     * Executor thread üzerinden çağrılmalıdır (kamera ve galeri yolları zaten executor'da).
+     */
+    private void launchScanPreview(Bitmap rawBmp) {
+        runOnUiThread(() -> {
+            if (alignmentOverlay != null) {
+                alignmentOverlay.setProcessingText("Tarama hazırlanıyor...");
+            }
+        });
+
+        // Boyut indir ve yön düzelt (processBitmap ile aynı mantık)
+        Bitmap bmp = downscaleIfNeeded(rawBmp, 2000);
+        int pdfW = 0, pdfH = 0;
+        if (cachedForm != null) {
+            pdfW = PdfGenerator.getPdfWidth(cachedForm);
+            pdfH = PdfGenerator.getPdfHeight(cachedForm);
+            boolean formPortrait = pdfH > pdfW;
+            boolean bmpLandscape = bmp.getWidth() > bmp.getHeight();
+            if (formPortrait && bmpLandscape) {
+                Matrix m = new Matrix();
+                m.postRotate(90);
+                Bitmap rot = Bitmap.createBitmap(bmp, 0, 0,
+                    bmp.getWidth(), bmp.getHeight(), m, true);
+                if (rot != bmp) bmp.recycle();
+                bmp = rot;
+            }
+        }
+
+        // Perspektif düzelt
+        Bitmap scanned = (pdfW > 0 && pdfH > 0)
+            ? DocumentScanner.scan(bmp, pdfW, pdfH)
+            : bmp;
+        if (scanned != bmp) bmp.recycle();
+
+        DocumentScanner.setPending(scanned);
+
+        final Intent intent = new Intent(this, ScanPreviewActivity.class);
+        runOnUiThread(() -> {
+            if (alignmentOverlay != null) alignmentOverlay.setProcessingText(null);
+            startActivityForResult(intent, REQUEST_SCAN_PREVIEW);
+        });
     }
 
     // ─── OMR core ─────────────────────────────────────────────────────────────

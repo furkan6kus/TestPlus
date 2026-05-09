@@ -33,6 +33,7 @@
         <activity android:name=".activities.SinavDetayActivity" />
         <activity android:name=".activities.CevapAnahtariActivity" />
         <activity android:name=".activities.KagitOkuActivity" />
+        <activity android:name=".activities.ScanPreviewActivity" />
         <activity android:name=".activities.OgrenciDetayActivity" />
 
         <provider

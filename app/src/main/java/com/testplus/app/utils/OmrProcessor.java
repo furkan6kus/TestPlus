@@ -1314,4 +1314,78 @@ public class OmrProcessor {
     public static boolean isPreviewBlockedByShadow(int[] argbPixels, int imgW, int imgH) {
         return previewIlluminationSpread(argbPixels, imgW, imgH) >= SHADOW_SPREAD_THRESHOLD;
     }
+
+    /**
+     * Ham fotoğrafı perspektif düzeltilmiş (CamScanner benzeri) bitmap'e çevirir.
+     * 4 köşe marker bulunursa homografi warp uygulanır; bulunamazsa kağıt sınırına kırpar.
+     * @param raw   kaynak bitmap (herhangi bir yön/boyut)
+     * @param pdfW  form PDF genişliği (pt) — marker boyutu hesabı için
+     * @param pdfH  form PDF yüksekliği (pt)
+     * @return perspektif düzeltilmiş bitmap veya raw (başarısızlıkta)
+     */
+    public static Bitmap correctPerspective(Bitmap raw, int pdfW, int pdfH) {
+        if (raw == null) return null;
+        int imgW = raw.getWidth();
+        int imgH = raw.getHeight();
+
+        int[] pixels = new int[imgW * imgH];
+        raw.getPixels(pixels, 0, imgW, 0, 0, imgW, imgH);
+
+        int[] paper = detectPaperBounds(pixels, imgW, imgH);
+        int pl = paper[0], ptop = paper[1], pr = paper[2], pb = paper[3];
+        int paperW = pr - pl;
+        int paperH = pb - ptop;
+        if (paperW < imgW / 4 || paperH < imgH / 4) {
+            pl = 0; ptop = 0; pr = imgW; pb = imgH;
+            paperW = imgW; paperH = imgH;
+        }
+
+        int expectedMarkerPx = Math.max(8, Math.round(paperW * (PdfGenerator.MARKER_PT / (float) pdfW)));
+        PointF[] corners = findFourCornerMarkersInPaperRect(pixels, imgW, imgH,
+            pl, ptop, pr, pb, paperW, expectedMarkerPx);
+        PointF tl = corners[0], tr = corners[1], bl = corners[2], br = corners[3];
+
+        boolean allFound = tl != null && tr != null && bl != null && br != null;
+        if (allFound) {
+            float topW = ptDist(tl, tr);
+            float botW = ptDist(bl, br);
+            float leftH = ptDist(tl, bl);
+            float rightH = ptDist(tr, br);
+            int outW = Math.round(Math.max(topW, botW));
+            int outH = Math.round(Math.max(leftH, rightH));
+
+            if (outW >= 80 && outH >= 80) {
+                float[] src = {tl.x, tl.y, tr.x, tr.y, bl.x, bl.y, br.x, br.y};
+                float[] dst = {0, 0, outW, 0, 0, outH, outW, outH};
+                Matrix m = new Matrix();
+                if (m.setPolyToPoly(src, 0, dst, 0, 4)) {
+                    try {
+                        Bitmap out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
+                        android.graphics.Canvas c = new android.graphics.Canvas(out);
+                        c.drawBitmap(raw, m, null);
+                        Log.i(TAG, "correctPerspective: warp OK "
+                            + imgW + "x" + imgH + " → " + outW + "x" + outH);
+                        return out;
+                    } catch (Exception e) {
+                        Log.w(TAG, "correctPerspective: warp exception — fallback crop", e);
+                    }
+                }
+            }
+        }
+
+        // Fallback: kağıt sınırına kırp
+        int cropW = Math.min(paperW, imgW - pl);
+        int cropH = Math.min(paperH, imgH - ptop);
+        if (cropW > 0 && cropH > 0 && (cropW < imgW || cropH < imgH)) {
+            Log.i(TAG, "correctPerspective: crop fallback pl=" + pl + " ptop=" + ptop
+                + " w=" + cropW + " h=" + cropH);
+            return Bitmap.createBitmap(raw, pl, ptop, cropW, cropH);
+        }
+        return raw;
+    }
+
+    private static float ptDist(PointF a, PointF b) {
+        float dx = b.x - a.x, dy = b.y - a.y;
+        return (float) Math.sqrt(dx * dx + dy * dy);
+    }
 }
