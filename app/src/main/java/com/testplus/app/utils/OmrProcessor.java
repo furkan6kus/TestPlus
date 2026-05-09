@@ -827,8 +827,10 @@ public class OmrProcessor {
 
         // Köşe bölgesi ortalama parlaklığı — gölgede beyaz kağıt grileşir; sabit eşik marker'ı kaçırır.
         int regionMean = meanLumaInRect(pixels, imgW, imgH, x0, y0, x1, y1, 4);
-        int pass1Thresh = Math.max(73, Math.min(MARKER_DARK_THRESHOLD + 24, regionMean - 32));
-        int strictDark = Math.max(60, Math.min(96, regionMean - 22));
+        // pass1Thresh: sadece gerçek siyah marker pikselleri yakalansın (luma < ~90).
+        // Eski değer (regionMean-32 ≈ 142) kağıt kenarı gradyanını da yakalıyordu → centroid kenara kayıyordu.
+        int pass1Thresh = Math.max(60, Math.min(90, regionMean - 120));
+        int strictDark = Math.max(50, Math.min(75, regionMean - 130));
 
         // Pass 1: bölgenin tamamında koyu piksel merkezi + bbox.
         long sumX = 0, sumY = 0, count = 0;
@@ -1157,10 +1159,11 @@ public class OmrProcessor {
         // köşeye çekiyor, gerçek siyah kare bulunamıyordu.
         // Ek olarak: kağıt kenarındaki yumuşak gri geçiş (anti-alias / hafif gölge)
         // pass-1 eşiğinin altına düşüp centroid'i kenara çekebiliyor. Bu yüzden
-        // pencereyi kağıt kenarından küçük bir buffer (markerInset) kadar içeriden
-        // başlat — marker kenardan ~10pt (≈markerPx/2) uzakta olduğu için tamamen
-        // içeride kalır.
-        int markerInset = Math.max(6, expectedMarkerPx / 4);
+        // pencereyi marker'ın gerçek başlangıcına kadar içeriden başlat.
+        // Marker merkezi kağıt kenarından mcPx px uzakta; başlangıcı ≈ mcPx/2 px.
+        // Kağıt kenarı gradyanı (kağıt kenarından 0..mcPx/2 arası gri pikseller)
+        // tamamen kapsam dışında kalır.
+        int markerInset = Math.max(8, mcPx / 2);
 
         int tlX0 = Math.max(0, pl + markerInset);
         int tlY0 = Math.max(0, ptop + markerInset);
