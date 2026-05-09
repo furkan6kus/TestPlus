@@ -71,12 +71,13 @@ public class PdfGenerator {
         bgPaint.setColor(Color.WHITE);
         canvas.drawRect(0, 0, pdfW, pdfH, bgPaint);
 
-        // Draw form name at top (form alanlarının altında kalabilir, sorun değil)
+        // Form adı — üstte, köşe marker alanından yukarıda (alanlarla çakışmasın)
         Paint namePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         namePaint.setColor(Color.BLACK);
         namePaint.setTextSize(14f);
         namePaint.setTextAlign(Paint.Align.CENTER);
-        canvas.drawText(form.ad, pdfW / 2f, MARKER_PADDING_PT + MARKER_PT + 16f, namePaint);
+        float titleY = MARKER_PADDING_PT + 5f;
+        canvas.drawText(form.ad, pdfW / 2f, titleY, namePaint);
 
         // Draw each field
         for (OptikFormAlan alan : alanlar) {

@@ -27,6 +27,7 @@ public class OgrenciDetayActivity extends AppCompatActivity {
     private Spinner spinnerDers;
     private LinearLayout cevaplarLayout;
     private TextView tvToplam, tvPybs, tvDogru, tvYanlis, tvBos, tvNet;
+    private EditText etAd, etNumara, etSinif;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -40,6 +41,14 @@ public class OgrenciDetayActivity extends AppCompatActivity {
         setSupportActionBar(toolbar);
         toolbar.setNavigationIcon(R.drawable.ic_arrow_back);
         toolbar.setNavigationOnClickListener(v -> finish());
+        toolbar.inflateMenu(R.menu.menu_ogrenci_detay);
+        toolbar.setOnMenuItemClickListener(item -> {
+            if (item.getItemId() == R.id.action_kaydet) {
+                kaydetBilgiler();
+                return true;
+            }
+            return false;
+        });
 
         spinnerDers = findViewById(R.id.spinnerDers);
         cevaplarLayout = findViewById(R.id.cevaplarLayout);
@@ -67,15 +76,34 @@ public class OgrenciDetayActivity extends AppCompatActivity {
             }
             runOnUiThread(() -> {
                 getSupportActionBar().setTitle(kagit.ad);
-                EditText etAd = findViewById(R.id.etAd);
-                EditText etNumara = findViewById(R.id.etNumara);
-                EditText etSinif = findViewById(R.id.etSinif);
+                etAd = findViewById(R.id.etAd);
+                etNumara = findViewById(R.id.etNumara);
+                etSinif = findViewById(R.id.etSinif);
                 if (etAd != null) etAd.setText(kagit.ad);
-                if (etNumara != null) etNumara.setText(kagit.numara);
-                if (etSinif != null) etSinif.setText(kagit.sinif);
+                if (etNumara != null) etNumara.setText(kagit.numara != null ? kagit.numara : "");
+                if (etSinif != null) etSinif.setText(kagit.sinif != null ? kagit.sinif : "");
 
                 hesaplaToplam();
                 setupDersSpinner();
+            });
+        });
+    }
+
+    private void kaydetBilgiler() {
+        if (kagit == null || etAd == null) return;
+        String ad = etAd.getText().toString().trim();
+        if (ad.isEmpty()) {
+            etAd.setError("Ad gerekli");
+            return;
+        }
+        kagit.ad = ad;
+        kagit.numara = etNumara != null ? etNumara.getText().toString().trim() : null;
+        kagit.sinif = etSinif != null ? etSinif.getText().toString().trim() : null;
+        executor.execute(() -> {
+            db.ogrenciKagidiDao().update(kagit);
+            runOnUiThread(() -> {
+                getSupportActionBar().setTitle(kagit.ad);
+                Toast.makeText(this, "Bilgiler kaydedildi", Toast.LENGTH_SHORT).show();
             });
         });
     }
@@ -174,11 +202,15 @@ public class OgrenciDetayActivity extends AppCompatActivity {
 
                         TextView tvCevap = new TextView(this);
                         tvCevap.setText(cevap);
-                        tvCevap.setTextSize(12);
+                        tvCevap.setTextSize(14);
+                        tvCevap.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
                         tvCevap.setGravity(android.view.Gravity.CENTER);
-                        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(64, 64);
+                        tvCevap.setIncludeFontPadding(false);
+                        int px = (int) (44 * getResources().getDisplayMetrics().density);
+                        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px, px);
                         lp.setMargins(4, 0, 4, 0);
                         tvCevap.setLayoutParams(lp);
+                        tvCevap.setPadding(0, 0, 0, 0);
 
                         if (secili) {
                             if (dogru2) {

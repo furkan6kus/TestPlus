@@ -78,7 +78,6 @@ public class YeniOptikFormAlanActivity extends AppCompatActivity {
         String[] yonler = {Constants.YON_YATAY, Constants.YON_DIKEY};
         spinnerYon.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, yonler));
 
-        spinnerDesen.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, Constants.DESENLER));
         spinnerDers.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, Constants.DERSLER));
 
         spinnerTur.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -91,11 +90,40 @@ public class YeniOptikFormAlanActivity extends AppCompatActivity {
                     String[] labels = {"Cevaplar", "Kitapçık", "Ad Soyad", "Sınıf"};
                     etEtiket.setText(labels[position]);
                 }
+                bindDesenSpinnerForTur(position, null);
                 updatePreview();
             }
             @Override
             public void onNothingSelected(AdapterView<?> parent) {}
         });
+
+        bindDesenSpinnerForTur(0, null);
+    }
+
+    /** Cevaplar/Kitapçık: AB–ABCDE; Ad Soyad: harf seti; Sınıf: tüm desenler. */
+    private void bindDesenSpinnerForTur(int turPosition, String selectDesen) {
+        String[] items;
+        if (turPosition == 0 || turPosition == 1) {
+            items = Constants.DESEN_CEVAP_KITAPCIK;
+        } else if (turPosition == 2) {
+            items = new String[]{Constants.DESEN_AD_SOYAD};
+        } else {
+            items = Constants.DESENLER;
+        }
+        spinnerDesen.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, items));
+        String want = selectDesen;
+        if (want == null && spinnerDesen.getAdapter() != null && spinnerDesen.getAdapter().getCount() > 0) {
+            want = spinnerDesen.getAdapter().getItem(0).toString();
+        }
+        if (want != null) {
+            for (int i = 0; i < items.length; i++) {
+                if (items[i].equals(want)) {
+                    spinnerDesen.setSelection(i);
+                    return;
+                }
+            }
+        }
+        spinnerDesen.setSelection(0);
     }
 
     private void setupPreviewUpdate() {
@@ -176,17 +204,20 @@ public class YeniOptikFormAlanActivity extends AppCompatActivity {
             if (alan == null) return;
             runOnUiThread(() -> {
                 String[] turKeys = {Constants.TUR_CEVAPLAR, Constants.TUR_KITAPCIK, Constants.TUR_AD_SOYAD, Constants.TUR_SINIF};
+                int turIdx = 0;
                 for (int i = 0; i < turKeys.length; i++) {
-                    if (turKeys[i].equals(alan.tur)) spinnerTur.setSelection(i);
+                    if (turKeys[i].equals(alan.tur)) {
+                        turIdx = i;
+                        spinnerTur.setSelection(i);
+                        break;
+                    }
                 }
                 String[] yonler = {Constants.YON_YATAY, Constants.YON_DIKEY};
                 for (int i = 0; i < yonler.length; i++) {
                     if (yonler[i].equals(alan.yon)) spinnerYon.setSelection(i);
                 }
                 etEtiket.setText(alan.etiket);
-                for (int i = 0; i < Constants.DESENLER.length; i++) {
-                    if (Constants.DESENLER[i].equals(alan.desen)) spinnerDesen.setSelection(i);
-                }
+                bindDesenSpinnerForTur(turIdx, alan.desen);
                 etBlokSayisi.setText(alan.blokSayisi > 0 ? String.valueOf(alan.blokSayisi) : "");
                 String veriStr = alan.bloktakiVeriSayisi > 0 ? String.valueOf(alan.bloktakiVeriSayisi) : "";
                 etBloktakiVeriSayisi.setText(veriStr);

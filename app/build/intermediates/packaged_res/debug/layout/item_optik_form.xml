@@ -37,10 +37,13 @@
                 android:layout_marginTop="4dp" />
         </LinearLayout>
 
-        <ImageView
-            android:layout_width="24dp"
-            android:layout_height="24dp"
+        <ImageButton
+            android:id="@+id/btnMore"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Menü"
             android:src="@android:drawable/ic_menu_more"
-            android:tint="@color/text_secondary" />
+            app:tint="@color/text_secondary" />
     </LinearLayout>
 </androidx.cardview.widget.CardView>

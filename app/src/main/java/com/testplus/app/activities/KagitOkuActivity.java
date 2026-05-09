@@ -84,7 +84,7 @@ public class KagitOkuActivity extends AppCompatActivity {
     private long lastReadinessLogNs = 0;
     /** Gölge nedeniyle geri sayım engellendi uyarısını spam etmemek için. */
     private long lastShadowToastNs = 0L;
-    private static final long SHADOW_TOAST_INTERVAL_NS = 3_500_000_000L; // 3.5 sn
+    private static final long SHADOW_TOAST_INTERVAL_NS = 2_800_000_000L; // ~2.8 sn
 
     // ─── Eğim sensörü (telefonu kağıda paralel tutmak için) ──────────────────
     private SensorManager sensorManager;
@@ -134,7 +134,7 @@ public class KagitOkuActivity extends AppCompatActivity {
         btnCek = findViewById(R.id.btnCek);
         bottomBar = findViewById(R.id.bottomBar);
 
-        if (btnCek != null) btnCek.setOnClickListener(v -> captureAndScan());
+        if (btnCek != null) btnCek.setOnClickListener(v -> captureAndScan(true));
 
         Button btnManuel = findViewById(R.id.btnManuelGiris);
         if (btnManuel != null) btnManuel.setOnClickListener(v -> switchToManual());
@@ -274,9 +274,38 @@ public class KagitOkuActivity extends AppCompatActivity {
     // ─── Camera capture: file-based JPEG (fixes YUV_420_888 + early-close crash) ──
 
     private void captureAndScan() {
+        captureAndScan(false);
+    }
+
+    private void captureAndScan(boolean manualOverride) {
         if (imageCapture == null) {
             Toast.makeText(this, "Kamera hazır değil, lütfen bekleyin", Toast.LENGTH_SHORT).show();
             return;
+        }
+        if (alignmentOverlay != null && !alignmentOverlay.isReadyForCapture()) {
+            if (manualOverride) {
+                Toast.makeText(this,
+                    "Hizalama tam değil ama manuel çekim yapılıyor; sonuç düşük doğrulukta olabilir.",
+                    Toast.LENGTH_LONG).show();
+            } else {
+            String msg;
+            if (!alignmentOverlay.tiltOk()) {
+                msg = String.format(java.util.Locale.US,
+                    "Önce telefonu düz tutun (eğim: %.0f° / %.0f°). Çerçeve yeşil olduktan sonra çekin.",
+                    alignmentOverlay.pitchDeg(), alignmentOverlay.rollDeg());
+            } else if (alignmentOverlay.isPreviewShadowBlocked()) {
+                msg = "Gölge veya düzensiz ışık var. Geri sayım ve optik okuma yapılmaz.\n"
+                    + "Kağıdı gölgelenmeyen, eşit aydınlatılmış bir yere alın.";
+            } else if (!alignmentOverlay.allOk()) {
+                msg = "4 siyah köşe karesi net görünmüyor. Işığı ve kadrajı düzeltip tekrar deneyin.";
+            } else if (!alignmentOverlay.areGuideCornersAligned()) {
+                msg = "Siyah kareleri yeşil çerçeve köşelerine oturtun; çerçeve tam yeşilken çekin.";
+            } else {
+                msg = "Çerçeve yeşil olmadan çekilemez. Hizalama ve ışığı kontrol edin.";
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+            return;
+            }
         }
         File photoFile = new File(getCacheDir(), "omr_" + System.currentTimeMillis() + ".jpg");
         ImageCapture.OutputFileOptions options =
@@ -488,10 +517,13 @@ public class KagitOkuActivity extends AppCompatActivity {
                         alignmentOverlay.setProcessingText(null);
                     }
                     Toast.makeText(KagitOkuActivity.this,
-                        "Kağıt üzerinde güçlü gölge algılandı; optik okuma yapılmadı.\n"
-                            + "Kağıdı gölgelenmeyen, düzgün aydınlatılmış bir yerde tutup tekrar deneyin.",
+                        "Kağıt üzerinde güçlü gölge veya düzensiz ışık algılandı.\n"
+                            + "Yanlış okuma riski nedeniyle sonuç gösterilmedi. Işığı düzeltip tekrar deneyin.",
                         Toast.LENGTH_LONG).show();
                 });
+                if (bitmap != null && !bitmap.isRecycled()) {
+                    bitmap.recycle();
+                }
                 return;
             }
 
@@ -744,7 +776,8 @@ public class KagitOkuActivity extends AppCompatActivity {
                 lastShadowToastNs = now;
                 runOnUiThread(() ->
                     Toast.makeText(KagitOkuActivity.this,
-                        "Gölge sebebiyle optik okuma başlatılamadı. Kağıdı gölgelenmeyen bir yerde tutun.",
+                        "Gölge veya düzensiz ışık: 3-2-1 başlamaz, okuma yapılmaz.\n"
+                            + "Kağıdı eşit aydınlatılmış, gölgelenmeyen bir yere alın.",
                         Toast.LENGTH_LONG).show());
             }
             // Hysteresis: ready iken +1; değilken -2 (yavaş kazan, hızlı kaybet).
@@ -791,8 +824,10 @@ public class KagitOkuActivity extends AppCompatActivity {
             final int countdownToShow = countdownTmp;
 
             final boolean cornersAlignedFinal = cornersAligned;
+            final boolean shadowBlockedFinal = shadowBlocksCountdown;
             runOnUiThread(() -> {
                 if (alignmentOverlay != null) {
+                    alignmentOverlay.setPreviewShadowBlocked(shadowBlockedFinal);
                     alignmentOverlay.setGuideCornersAligned(cornersAlignedFinal);
                     alignmentOverlay.setDetectedCorners(ok[0], ok[1], ok[2], ok[3]);
                     alignmentOverlay.setDetectedScreenPositions(
@@ -983,10 +1018,10 @@ public class KagitOkuActivity extends AppCompatActivity {
             frame.bottom - insetY, frame.bottom - insetY
         };
 
-        // Tolerans: çerçevenin %5'i kadar (ya da en az 24dp). Yüksek çözünürlükte
-        // kullanıcı kağıdı net oturtursa marker beklenen yerin 30-50 px yakınında olur.
-        float tol = Math.max(24f * density,
-            Math.min(frame.width(), frame.height()) * 0.05f);
+        // Tolerans: çerçevenin %8'i + min 32dp — hafif kadraj kaymasında da çekim izni
+        // (kullanıcı siyah kareleri kabaca köşeye getirdiğinde takılı kalmayı azaltır).
+        float tol = Math.max(32f * density,
+            Math.min(frame.width(), frame.height()) * 0.08f);
         float tol2 = tol * tol;
         for (int i = 0; i < 4; i++) {
             PointF p = screenCorners[i];
@@ -997,15 +1032,15 @@ public class KagitOkuActivity extends AppCompatActivity {
         }
         // Ek koruma: kağıt çerçeveden çok küçük çekilmişse ptToPx düşer, OMR güvenilmez olur.
         // İşaretler çerçeveye iyi oturduysa zaten genişlik ≈ frame.width() - 2*insetX olmalı.
-        // %85 alt sınır: ufak küçülmelere izin ver, kullanıcı çerçeve dışına çıkmasın.
+        // Küçük çekim / uzak kadraj: biraz daha toleranslı (%72) — aksi halde 4 köşe
+        // yeşil olsa bile "çerçeveye oturt" aşamasında sık sık red.
         float expectedW = frame.width()  - 2f * insetX;
         float expectedH = frame.height() - 2f * insetY;
         float capturedW = Math.min(screenCorners[1].x, screenCorners[3].x)
             - Math.max(screenCorners[0].x, screenCorners[2].x);
         float capturedH = Math.min(screenCorners[2].y, screenCorners[3].y)
             - Math.max(screenCorners[0].y, screenCorners[1].y);
-        // Per-corner tol pass etse de toplamda kağıt çok küçük çekilmemeli (≥%80 expected).
-        if (capturedW < expectedW * 0.80f || capturedH < expectedH * 0.80f) {
+        if (capturedW < expectedW * 0.72f || capturedH < expectedH * 0.72f) {
             return false;
         }
         return true;

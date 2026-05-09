@@ -1,6 +1,7 @@
 package com.testplus.app.adapters;
 
 import android.view.*;
+import android.widget.ImageButton;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
@@ -11,15 +12,15 @@ import java.util.List;
 
 public class OptikFormAdapter extends RecyclerView.Adapter<OptikFormAdapter.ViewHolder> {
     public interface OnItemClickListener { void onItemClick(OptikForm form); }
-    public interface OnItemLongClickListener { void onItemLongClick(OptikForm form); }
+    public interface OnMenuClickListener { void onMenuClick(OptikForm form); }
 
     private List<OptikForm> data = new ArrayList<>();
     private final OnItemClickListener clickListener;
-    private final OnItemLongClickListener longClickListener;
+    private final OnMenuClickListener menuClickListener;
 
-    public OptikFormAdapter(OnItemClickListener click, OnItemLongClickListener longClick) {
+    public OptikFormAdapter(OnItemClickListener click, OnMenuClickListener menu) {
         this.clickListener = click;
-        this.longClickListener = longClick;
+        this.menuClickListener = menu;
     }
 
     public void setData(List<OptikForm> list) {
@@ -41,7 +42,9 @@ public class OptikFormAdapter extends RecyclerView.Adapter<OptikFormAdapter.View
         holder.tvAd.setText(form.ad);
         holder.tvBilgi.setText(form.kagit + " • " + form.yon);
         holder.itemView.setOnClickListener(v -> clickListener.onItemClick(form));
-        holder.itemView.setOnLongClickListener(v -> { longClickListener.onItemLongClick(form); return true; });
+        holder.btnMore.setOnClickListener(v -> {
+            if (menuClickListener != null) menuClickListener.onMenuClick(form);
+        });
     }
 
     @Override
@@ -49,10 +52,12 @@ public class OptikFormAdapter extends RecyclerView.Adapter<OptikFormAdapter.View
 
     static class ViewHolder extends RecyclerView.ViewHolder {
         TextView tvAd, tvBilgi;
+        ImageButton btnMore;
         ViewHolder(View view) {
             super(view);
             tvAd = view.findViewById(R.id.tvAd);
             tvBilgi = view.findViewById(R.id.tvBilgi);
+            btnMore = view.findViewById(R.id.btnMore);
         }
     }
 }

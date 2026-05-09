@@ -78,7 +78,7 @@
                                 android:id="@+id/etNumara"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:enabled="false" />
+                                android:inputType="number" />
                         </com.google.android.material.textfield.TextInputLayout>
                         <com.google.android.material.textfield.TextInputLayout
                             android:layout_width="0dp"
@@ -90,7 +90,7 @@
                                 android:id="@+id/etSinif"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:enabled="false" />
+                                android:inputType="text" />
                         </com.google.android.material.textfield.TextInputLayout>
                     </LinearLayout>
 
@@ -104,7 +104,7 @@
                             android:id="@+id/etAd"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:enabled="false" />
+                            android:inputType="textCapWords" />
                     </com.google.android.material.textfield.TextInputLayout>
 
                     <Spinner

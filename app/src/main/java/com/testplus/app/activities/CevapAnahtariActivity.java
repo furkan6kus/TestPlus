@@ -1,6 +1,8 @@
 package com.testplus.app.activities;
 
+import android.graphics.Typeface;
 import android.os.Bundle;
+import android.util.TypedValue;
 import android.view.*;
 import android.widget.*;
 import androidx.appcompat.app.AppCompatActivity;
@@ -99,12 +101,19 @@ public class CevapAnahtariActivity extends AppCompatActivity {
             tvNo.setPadding(0, 0, 8, 0);
             satir.addView(tvNo);
 
+            int btnPx = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 44, getResources().getDisplayMetrics());
             List<Button> butonlar = new ArrayList<>();
             for (char c : secenekler) {
                 Button btn = new Button(this);
                 btn.setText(String.valueOf(c));
-                btn.setTextSize(12);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(80, 80);
+                btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                btn.setTypeface(Typeface.DEFAULT_BOLD);
+                btn.setIncludeFontPadding(false);
+                btn.setAllCaps(false);
+                btn.setMinWidth(0);
+                btn.setMinHeight(0);
+                btn.setPadding(0, 0, 0, 0);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(btnPx, btnPx);
                 lp.setMargins(4, 0, 4, 0);
                 btn.setLayoutParams(lp);
                 String cevap = String.valueOf(c);

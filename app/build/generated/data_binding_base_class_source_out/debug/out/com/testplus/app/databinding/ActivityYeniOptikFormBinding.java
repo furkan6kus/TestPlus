@@ -4,6 +4,7 @@ package com.testplus.app.databinding;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -23,6 +24,9 @@ public final class ActivityYeniOptikFormBinding implements ViewBinding {
   private final LinearLayout rootView;
 
   @NonNull
+  public final ImageButton btnAlanEkle;
+
+  @NonNull
   public final TextInputEditText etAd;
 
   @NonNull
@@ -38,9 +42,11 @@ public final class ActivityYeniOptikFormBinding implements ViewBinding {
   public final TextView tvKaydet;
 
   private ActivityYeniOptikFormBinding(@NonNull LinearLayout rootView,
-      @NonNull TextInputEditText etAd, @NonNull Spinner spinnerKagit, @NonNull Spinner spinnerYon,
-      @NonNull Toolbar toolbar, @NonNull TextView tvKaydet) {
+      @NonNull ImageButton btnAlanEkle, @NonNull TextInputEditText etAd,
+      @NonNull Spinner spinnerKagit, @NonNull Spinner spinnerYon, @NonNull Toolbar toolbar,
+      @NonNull TextView tvKaydet) {
     this.rootView = rootView;
+    this.btnAlanEkle = btnAlanEkle;
     this.etAd = etAd;
     this.spinnerKagit = spinnerKagit;
     this.spinnerYon = spinnerYon;
@@ -75,6 +81,12 @@ public final class ActivityYeniOptikFormBinding implements ViewBinding {
     // This is done to optimize the compiled bytecode for size and performance.
     int id;
     missingId: {
+      id = R.id.btnAlanEkle;
+      ImageButton btnAlanEkle = ViewBindings.findChildViewById(rootView, id);
+      if (btnAlanEkle == null) {
+        break missingId;
+      }
+
       id = R.id.etAd;
       TextInputEditText etAd = ViewBindings.findChildViewById(rootView, id);
       if (etAd == null) {
@@ -105,8 +117,8 @@ public final class ActivityYeniOptikFormBinding implements ViewBinding {
         break missingId;
       }
 
-      return new ActivityYeniOptikFormBinding((LinearLayout) rootView, etAd, spinnerKagit,
-          spinnerYon, toolbar, tvKaydet);
+      return new ActivityYeniOptikFormBinding((LinearLayout) rootView, btnAlanEkle, etAd,
+          spinnerKagit, spinnerYon, toolbar, tvKaydet);
     }
     String missingId = rootView.getResources().getResourceName(id);
     throw new NullPointerException("Missing required view with ID: ".concat(missingId));

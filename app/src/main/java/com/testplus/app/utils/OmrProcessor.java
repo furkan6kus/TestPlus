@@ -62,6 +62,8 @@ public class OmrProcessor {
     /** Bu sayıdan fazla koyu piksel varsa bunu marker SAYMAZ (kot/parmak/gölge).
      *  Yüksek çözünürlüklü kameralar için 80K. */
     private static final int MARKER_MAX_DARK_PIXELS = 80_000;
+    private static final int[] MARKER_HIST_SLACK = {0, 4, 8};
+    private static final float[] MARKER_LOCAL_FRACS = {0.24f, 0.32f, 0.18f, 0.40f, 0.28f};
 
     // ─── Kağıt tespiti ──────────────────────────────────────────────────────
     /** Bir piksel "parlak" sayılması için min. parlaklık. Loş fotoğraflar için 155. */
@@ -212,20 +214,14 @@ public class OmrProcessor {
             + " (1.0=ideal beyaz, <0.7=fotoğraf çok karanlık)");
 
         // ── Adım 3: marker'ları SADECE kağıt içinde ara ─────────────────────
-        // Köşe arama bölgesi kağıdın ~%16'sı (eğri kamera açısına biraz pay).
-        int sw = Math.max(40, paperW / 6);
-        int sh = Math.max(40, paperH / 6);
-        // Marker fiziksel boyutu: PDF'te 18pt, kağıt genişliği orantılı → piksel beklenti.
-        // Bunu kullanarak gölge / sayfa kenarı / parmak gibi büyük lekeleri eler.
+        // Köşe penceresi canlı önizleme ile aynı (geniş + kenar payı + eksik köşe tamamlama).
         int expectedMarkerPx = Math.max(8, Math.round(paperW * (PdfGenerator.MARKER_PT / (float) pdfWidthPt)));
-        PointF tlImg = findMarkerCenter(pixels, imgW, imgH, pl,         ptop,         pl + sw,   ptop + sh, expectedMarkerPx);
-        PointF trImg = findMarkerCenter(pixels, imgW, imgH, pr - sw,    ptop,         pr,        ptop + sh, expectedMarkerPx);
-        PointF blImg = findMarkerCenter(pixels, imgW, imgH, pl,         pb - sh,      pl + sw,   pb,        expectedMarkerPx);
-        PointF brImg = findMarkerCenter(pixels, imgW, imgH, pr - sw,    pb - sh,      pr,        pb,        expectedMarkerPx);
+        PointF[] cm = findFourCornerMarkersInPaperRect(pixels, imgW, imgH,
+            pl, ptop, pr, pb, paperW, expectedMarkerPx);
+        PointF tlImg = cm[0], trImg = cm[1], blImg = cm[2], brImg = cm[3];
         int found = (tlImg != null ? 1 : 0) + (trImg != null ? 1 : 0)
                   + (blImg != null ? 1 : 0) + (brImg != null ? 1 : 0);
-        Log.i(TAG, "[3/6] Köşe arama bölgesi: " + sw + "x" + sh + " px"
-            + " | bulunan: " + found + "/4");
+        Log.i(TAG, "[3/6] Köşe arama (geniş pencere + tamamlama) | bulunan: " + found + "/4");
         Log.i(TAG, "      TL=" + fmtPt(tlImg) + "  TR=" + fmtPt(trImg)
             + "  BL=" + fmtPt(blImg) + "  BR=" + fmtPt(brImg));
 
@@ -591,14 +587,16 @@ public class OmrProcessor {
      * Koyu zemin (kot, masa) etrafında olsa bile kağıt izole edilir.
      */
     private static int[] detectPaperBounds(int[] pixels, int imgW, int imgH) {
-        int step = Math.max(1, Math.min(imgW, imgH) / 250);
         int[] rowBright = new int[imgH];
         int[] colBright = new int[imgW];
 
-        for (int y = 0; y < imgH; y += step) {
-            int rc = 0;
+        // Her satır ve sütun için tam tarama — seyrek örneklemede (x/y += step) birçok
+        // indeks hiç güncellenmez; sağ/sol üst/alt sınır yanlış iner, özellikle sağ üst
+        // köşe marker araması boş kalır (canlı önizlemede sürekli 3/4 köşe).
+        for (int y = 0; y < imgH; y++) {
             int rowBase = y * imgW;
-            for (int x = 0; x < imgW; x += step) {
+            int rc = 0;
+            for (int x = 0; x < imgW; x++) {
                 int p = pixels[rowBase + x];
                 int br = ((p >> 16 & 0xFF) * 299
                         + (p >>  8 & 0xFF) * 587
@@ -660,6 +658,122 @@ public class OmrProcessor {
         return (int) (sum / n);
     }
 
+    private static int pixelLuma(int p) {
+        return ((p >> 16 & 0xFF) * 299 + (p >> 8 & 0xFF) * 587 + (p & 0xFF) * 114) / 1000;
+    }
+
+    /** Marker bbox beklenen boyuta yakın mı (gölge yedeği için gevşek sınırlar). */
+    private static boolean isReasonableMarkerBlob(int blobW, int blobH,
+            int expectedMarkerPx, boolean useSizeCheck) {
+        if (blobW < 2 || blobH < 2) return false;
+        if (!useSizeCheck) {
+            float ar = Math.max(blobW, blobH) / (float) Math.min(blobW, blobH);
+            return ar <= 3.4f;
+        }
+        int em = Math.max(6, expectedMarkerPx);
+        int side = Math.max(blobW, blobH);
+        if (side < em * 0.26f) return false;
+        if (side > em * 3.7f) return false;
+        float ar = Math.max(blobW, blobH) / (float) Math.min(blobW, blobH);
+        return ar <= 3.3f;
+    }
+
+    /**
+     * br &lt;= T olan piksellerin ağırlık merkezi; sayım ve bbox kontrolü geçerse döner.
+     */
+    private static PointF centroidBelowThreshold(int[] pixels, int imgW, int imgH,
+            int x0, int y0, int x1, int y1, int T,
+            int expectedMarkerPx, boolean useSizeCheck) {
+        long sumX = 0, sumY = 0;
+        int count = 0;
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+        for (int y = y0; y < y1 && y < imgH; y++) {
+            int rowBase = y * imgW;
+            for (int x = x0; x < x1 && x < imgW; x++) {
+                int br = pixelLuma(pixels[rowBase + x]);
+                if (br <= T) {
+                    sumX += x;
+                    sumY += y;
+                    count++;
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+        if (count < MARKER_MIN_DARK_PIXELS || count > MARKER_MAX_DARK_PIXELS) return null;
+        int bw = maxX - minX + 1;
+        int bh = maxY - minY + 1;
+        if (!isReasonableMarkerBlob(bw, bh, expectedMarkerPx, useSizeCheck)) return null;
+        return new PointF(sumX / (float) count, sumY / (float) count);
+    }
+
+    /**
+     * Gölgede tüm köşe kutusu mutlak eşikle "tamamı koyu" veya "hiç koyu yok" olunca:
+     * histogramdan en koyu N piksel kütle eşiği + yerel min–max kontrast yedeği.
+     */
+    private static PointF findMarkerShadowFallback(int[] pixels, int imgW, int imgH,
+            int x0, int y0, int x1, int y1, int expectedMarkerPx, boolean useSizeCheck) {
+        int em = Math.max(8, expectedMarkerPx);
+        int[] hist = new int[256];
+        for (int y = y0; y < y1 && y < imgH; y++) {
+            int rowBase = y * imgW;
+            for (int x = x0; x < x1 && x < imgW; x++) {
+                hist[pixelLuma(pixels[rowBase + x])]++;
+            }
+        }
+        int total = 0;
+        for (int v : hist) total += v;
+        if (total < 80) return null;
+
+        int[] targets = {
+            Math.max(22, (em * em) / 5),
+            Math.max(28, (em * em) / 3),
+            Math.max(32, (em * em) / 2),
+            Math.min(MARKER_MAX_DARK_PIXELS - 50, em * em),
+            Math.min(MARKER_MAX_DARK_PIXELS - 50, (em * em * 5) / 4)
+        };
+        for (int target : targets) {
+            if (target < MARKER_MIN_DARK_PIXELS || target >= total) continue;
+            int cum = 0;
+            int threshLum = 255;
+            for (int l = 0; l < 256; l++) {
+                cum += hist[l];
+                if (cum >= target) {
+                    threshLum = l;
+                    break;
+                }
+            }
+            for (int slack : MARKER_HIST_SLACK) {
+                PointF c = centroidBelowThreshold(pixels, imgW, imgH, x0, y0, x1, y1,
+                    threshLum + slack, expectedMarkerPx, useSizeCheck);
+                if (c != null) return c;
+            }
+        }
+
+        int minL = 255, maxL = 0;
+        for (int y = y0; y < y1 && y < imgH; y++) {
+            int rowBase = y * imgW;
+            for (int x = x0; x < x1 && x < imgW; x++) {
+                int br = pixelLuma(pixels[rowBase + x]);
+                if (br < minL) minL = br;
+                if (br > maxL) maxL = br;
+            }
+        }
+        int spread = maxL - minL;
+        if (spread < 12) return null;
+        for (float frac : MARKER_LOCAL_FRACS) {
+            int T = minL + Math.round(spread * frac);
+            T = Math.min(T, maxL - 7);
+            PointF c = centroidBelowThreshold(pixels, imgW, imgH, x0, y0, x1, y1,
+                T, expectedMarkerPx, useSizeCheck);
+            if (c != null) return c;
+        }
+        return null;
+    }
+
     /**
      * Verilen dikdörtgendeki koyu piksel ağırlık merkezini döndürür.
      *
@@ -706,15 +820,32 @@ public class OmrProcessor {
                 }
             }
         }
-        if (count < MARKER_MIN_DARK_PIXELS || count > MARKER_MAX_DARK_PIXELS) return null;
-        float roughCx = sumX / (float) count;
-        float roughCy = sumY / (float) count;
-        int blobW = maxX - minX;
-        int blobH = maxY - minY;
+
+        boolean fromShadowFallback = false;
+        float roughCx;
+        float roughCy;
+        int blobW;
+        int blobH;
+
+        if (count < MARKER_MIN_DARK_PIXELS || count > MARKER_MAX_DARK_PIXELS) {
+            PointF fb = findMarkerShadowFallback(pixels, imgW, imgH, x0, y0, x1, y1,
+                expectedMarkerPx, useSizeCheck);
+            if (fb == null) return null;
+            roughCx = fb.x;
+            roughCy = fb.y;
+            blobW = Math.max(4, Math.round(expectedMarkerPx * 1.05f));
+            blobH = blobW;
+            fromShadowFallback = true;
+        } else {
+            roughCx = sumX / (float) count;
+            roughCy = sumY / (float) count;
+            blobW = maxX - minX;
+            blobH = maxY - minY;
+        }
 
         // Boyut sanity check: gerçek marker ±%70 toleransla beklenen boyutta olur.
         // Gölge / kağıt kenarı / parmak çok daha geniş ya da çok elongated çıkar.
-        if (useSizeCheck) {
+        if (useSizeCheck && !fromShadowFallback) {
             int maxAllowed = Math.round(expectedMarkerPx * 2.6f); // bol pay (eğik kamera için)
             int sideMin = Math.max(blobW, blobH);
             float aspectRatio = blobW > 0 && blobH > 0
@@ -758,6 +889,16 @@ public class OmrProcessor {
         int ry0 = Math.max(y0, (int) roughCy - refineR);
         int ry1 = Math.min(y1, (int) roughCy + refineR);
 
+        int strictPass2 = strictDark;
+        if (fromShadowFallback) {
+            int lx0 = Math.max(x0, (int) roughCx - 26);
+            int ly0 = Math.max(y0, (int) roughCy - 26);
+            int lx1 = Math.min(x1, (int) roughCx + 26);
+            int ly1 = Math.min(y1, (int) roughCy + 26);
+            int rm = meanLumaInRect(pixels, imgW, imgH, lx0, ly0, lx1, ly1, 2);
+            strictPass2 = Math.max(50, Math.min(105, rm - 17));
+        }
+
         long sumX2 = 0, sumY2 = 0, count2 = 0;
         for (int y = ry0; y < ry1 && y < imgH; y++) {
             int rowBase = y * imgW;
@@ -766,7 +907,7 @@ public class OmrProcessor {
                 int br = ((p >> 16 & 0xFF) * 299
                         + (p >>  8 & 0xFF) * 587
                         + (p       & 0xFF) * 114) / 1000;
-                if (br < strictDark) {
+                if (br < strictPass2) {
                     sumX2 += x; sumY2 += y; count2++;
                 }
             }
@@ -859,6 +1000,172 @@ public class OmrProcessor {
     //                  REAL-TIME API (canlı kamera kareleri)
     // ════════════════════════════════════════════════════════════════════════
 
+    private static float cornerDist(PointF a, PointF b) {
+        float dx = a.x - b.x, dy = a.y - b.y;
+        return (float) Math.sqrt(dx * dx + dy * dy);
+    }
+
+    /** Köşe adayı kağıdın ilgili köşesine yeterince yakın mı? (içteki koyu baloncukları elemek için). */
+    private static boolean isCornerCandidateNearExpected(PointF p, int cornerIndex,
+            int pl, int ptop, int pr, int pb, int expectedMarkerPx) {
+        if (p == null) return false;
+        float tx = (cornerIndex == 0 || cornerIndex == 2) ? pl : pr;
+        float ty = (cornerIndex == 0 || cornerIndex == 1) ? ptop : pb;
+        float dx = p.x - tx;
+        float dy = p.y - ty;
+        float maxDist = Math.max(expectedMarkerPx * 7f,
+            Math.min(pr - pl, pb - ptop) * 0.30f);
+        return dx * dx + dy * dy <= maxDist * maxDist;
+    }
+
+    /**
+     * Üç köşe güvenilirken dördüncüyü paralelkenar kuralıyla tamamlar (TR+BL-TL=BR vb.),
+     * ardından küçük pencerede {@link #findMarkerCenter} ile gerçek siyah kareye yaklaştırır.
+     */
+    private static void tryCompleteMissingCorner(PointF[] c, int[] pixels, int imgW, int imgH,
+                                                 int expectedMarkerPx) {
+        int nullIdx = -1;
+        int nullCount = 0;
+        for (int i = 0; i < 4; i++) {
+            if (c[i] == null) {
+                nullCount++;
+                nullIdx = i;
+            }
+        }
+        if (nullCount != 1) return;
+
+        PointF guess = null;
+        if (nullIdx == 3 && c[0] != null && c[1] != null && c[2] != null) {
+            guess = new PointF(c[1].x + c[2].x - c[0].x, c[1].y + c[2].y - c[0].y);
+            float topW = cornerDist(c[0], c[1]);
+            float leftH = cornerDist(c[0], c[2]);
+            if (topW < 24f || leftH < 24f) return;
+            if (Math.abs(cornerDist(c[2], guess) - topW) > 0.55f * topW) return;
+            if (Math.abs(cornerDist(c[1], guess) - leftH) > 0.55f * leftH) return;
+        } else if (nullIdx == 1 && c[0] != null && c[2] != null && c[3] != null) {
+            guess = new PointF(c[3].x + c[0].x - c[2].x, c[3].y + c[0].y - c[2].y);
+            float dTop = cornerDist(c[0], guess);
+            float dBot = cornerDist(c[2], c[3]);
+            float dL = cornerDist(c[0], c[2]);
+            float dR = cornerDist(guess, c[3]);
+            if (dBot < 24f || dL < 24f) return;
+            if (Math.abs(dTop - dBot) > 0.55f * dBot) return;
+            if (Math.abs(dL - dR) > 0.55f * dL) return;
+        } else if (nullIdx == 2 && c[0] != null && c[1] != null && c[3] != null) {
+            guess = new PointF(c[3].x + c[0].x - c[1].x, c[3].y + c[0].y - c[1].y);
+            float leftH = cornerDist(c[0], guess);
+            float rightH = cornerDist(c[1], c[3]);
+            float topW = cornerDist(c[0], c[1]);
+            float botW = cornerDist(guess, c[3]);
+            if (rightH < 24f || topW < 24f) return;
+            if (Math.abs(leftH - rightH) > 0.55f * rightH) return;
+            if (Math.abs(topW - botW) > 0.55f * topW) return;
+        } else if (nullIdx == 0 && c[1] != null && c[2] != null && c[3] != null) {
+            guess = new PointF(c[1].x + c[2].x - c[3].x, c[1].y + c[2].y - c[3].y);
+            float topW = cornerDist(guess, c[1]);
+            float botW = cornerDist(c[2], c[3]);
+            float leftH = cornerDist(guess, c[2]);
+            float rightH = cornerDist(c[1], c[3]);
+            if (botW < 24f || leftH < 24f) return;
+            if (Math.abs(topW - botW) > 0.55f * botW) return;
+            if (Math.abs(leftH - rightH) > 0.55f * leftH) return;
+        }
+        if (guess == null) return;
+
+        guess.x = Math.max(2f, Math.min(imgW - 3f, guess.x));
+        guess.y = Math.max(2f, Math.min(imgH - 3f, guess.y));
+
+        int r = Math.max(22, Math.round(expectedMarkerPx * 2.6f));
+        int x0 = Math.max(0, (int) guess.x - r);
+        int y0 = Math.max(0, (int) guess.y - r);
+        int x1 = Math.min(imgW, (int) guess.x + r + 1);
+        int y1 = Math.min(imgH, (int) guess.y + r + 1);
+        if (x1 > x0 && y1 > y0) {
+            PointF refined = findMarkerCenter(pixels, imgW, imgH, x0, y0, x1, y1, expectedMarkerPx);
+            c[nullIdx] = refined;
+        }
+    }
+
+    /** Son çare: görüntünün ilgili çeyreğinde marker ara (boyut kontrolü gevşek). */
+    private static PointF tryQuadrantFallback(int[] pixels, int imgW, int imgH, int cornerIndex) {
+        int mx = Math.max(56, imgW * 3 / 10);
+        int my = Math.max(56, imgH * 3 / 10);
+        int x0, y0, x1, y1;
+        switch (cornerIndex) {
+            case 0: x0 = 0;       y0 = 0;       x1 = mx;     y1 = my;     break;
+            case 1: x0 = imgW - mx; y0 = 0;     x1 = imgW;   y1 = my;     break;
+            case 2: x0 = 0;       y0 = imgH - my; x1 = mx;     y1 = imgH;   break;
+            default: x0 = imgW - mx; y0 = imgH - my; x1 = imgW;   y1 = imgH;   break;
+        }
+        if (x1 <= x0 || y1 <= y0) return null;
+        PointF p = findMarkerCenter(pixels, imgW, imgH, x0, y0, x1, y1, 0);
+        return p;
+    }
+
+    /**
+     * Verilen kağıt dikdörtgeni içinde 4 köşe marker'ını arar (önizleme ve tam çözünürlük ortak).
+     */
+    private static PointF[] findFourCornerMarkersInPaperRect(int[] pixels, int imgW, int imgH,
+            int pl, int ptop, int pr, int pb, int paperW, int expectedMarkerPx) {
+        int paperH = pb - ptop;
+        int sw = Math.max(56, paperW / 4);
+        int sh = Math.max(56, paperH / 4);
+        int edgePad = Math.max(14, Math.min(paperW, paperH) / 28);
+
+        int tlX0 = Math.max(0, pl - edgePad);
+        int tlY0 = Math.max(0, ptop - edgePad);
+        int tlX1 = pl + sw;
+        int tlY1 = ptop + sh;
+
+        int trX0 = Math.max(0, pr - sw);
+        int trY0 = Math.max(0, ptop - edgePad);
+        int trX1 = Math.min(imgW, pr + edgePad);
+        int trY1 = ptop + sh;
+
+        int blX0 = Math.max(0, pl - edgePad);
+        int blY0 = Math.max(0, pb - sh);
+        int blX1 = pl + sw;
+        int blY1 = Math.min(imgH, pb + edgePad);
+
+        int brX0 = Math.max(0, pr - sw);
+        int brY0 = Math.max(0, pb - sh);
+        int brX1 = Math.min(imgW, pr + edgePad);
+        int brY1 = Math.min(imgH, pb + edgePad);
+
+        PointF[] corners = new PointF[4];
+        corners[0] = findMarkerCenter(pixels, imgW, imgH,
+            tlX0, tlY0, Math.max(tlX0 + 32, tlX1), Math.max(tlY0 + 32, tlY1), expectedMarkerPx);
+        corners[1] = findMarkerCenter(pixels, imgW, imgH,
+            trX0, trY0, Math.max(trX0 + 32, trX1), Math.max(trY0 + 32, trY1), expectedMarkerPx);
+        corners[2] = findMarkerCenter(pixels, imgW, imgH,
+            blX0, blY0, Math.max(blX0 + 32, blX1), Math.max(blY0 + 32, blY1), expectedMarkerPx);
+        corners[3] = findMarkerCenter(pixels, imgW, imgH,
+            brX0, brY0, Math.max(brX0 + 32, brX1), Math.max(brY0 + 32, brY1), expectedMarkerPx);
+
+        for (int i = 0; i < 4; i++) {
+            if (!isCornerCandidateNearExpected(corners[i], i, pl, ptop, pr, pb, expectedMarkerPx)) {
+                corners[i] = null;
+            }
+        }
+
+        tryCompleteMissingCorner(corners, pixels, imgW, imgH, expectedMarkerPx);
+
+        int missing = 0;
+        for (PointF p : corners) if (p == null) missing++;
+        // İki+ köşe boşsa çeyrek arama spiral/defter lekesine düşebilir — sadece tek eksikte dene.
+        if (missing == 1) {
+            for (int i = 0; i < 4; i++) {
+                if (corners[i] == null) {
+                    PointF fb = tryQuadrantFallback(pixels, imgW, imgH, i);
+                    if (isCornerCandidateNearExpected(fb, i, pl, ptop, pr, pb, expectedMarkerPx)) {
+                        corners[i] = fb;
+                    }
+                }
+            }
+        }
+        return corners;
+    }
+
     /**
      * Canlı kamera karesinden 4 köşe markerını bulur.
      * Kağıt tespiti + paper-bounded marker arama uygulanır.
@@ -866,26 +1173,17 @@ public class OmrProcessor {
      */
     public static PointF[] detectCornersPartial(int[] pixels, int imgW, int imgH,
                                                 int pdfW, int pdfH) {
-        // 1. Kağıt sınırları
         int[] paper = detectPaperBounds(pixels, imgW, imgH);
         int pl = paper[0], ptop = paper[1], pr = paper[2], pb = paper[3];
         int paperW = pr - pl;
         int paperH = pb - ptop;
         if (paperW < imgW / 4 || paperH < imgH / 4) {
             pl = 0; ptop = 0; pr = imgW; pb = imgH;
-            paperW = imgW; paperH = imgH;
+            paperW = imgW;
         }
-        // 2. Kağıt içinde köşe arama (~%16 — kamera açısı için pay)
-        int sw = Math.max(40, paperW / 6);
-        int sh = Math.max(40, paperH / 6);
-        // PDF'te marker 18pt; kağıt genişliği orantısı ile beklenen piksel boyutu.
         int expectedMarkerPx = Math.max(8, Math.round(paperW * (PdfGenerator.MARKER_PT / (float) pdfW)));
-        return new PointF[]{
-            findMarkerCenter(pixels, imgW, imgH, pl,         ptop,        pl + sw, ptop + sh, expectedMarkerPx), // TL
-            findMarkerCenter(pixels, imgW, imgH, pr - sw,    ptop,        pr,      ptop + sh, expectedMarkerPx), // TR
-            findMarkerCenter(pixels, imgW, imgH, pl,         pb - sh,     pl + sw, pb,        expectedMarkerPx), // BL
-            findMarkerCenter(pixels, imgW, imgH, pr - sw,    pb - sh,     pr,      pb,        expectedMarkerPx)  // BR
-        };
+        return findFourCornerMarkersInPaperRect(pixels, imgW, imgH,
+            pl, ptop, pr, pb, paperW, expectedMarkerPx);
     }
 
     /**

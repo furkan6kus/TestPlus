@@ -2,9 +2,12 @@ package com.testplus.app.activities;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.View;
 import android.widget.*;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
+import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.testplus.app.R;
 import com.testplus.app.database.AppDatabase;
 import com.testplus.app.database.entities.OptikForm;
@@ -13,6 +16,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class YeniOptikFormActivity extends AppCompatActivity {
+    private static final int REQ_ALAN = 4401;
+
     private EditText etAd;
     private Spinner spinnerKagit, spinnerYon;
     private ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -53,9 +58,67 @@ public class YeniOptikFormActivity extends AppCompatActivity {
         TextView tvKaydet = findViewById(R.id.tvKaydet);
         tvKaydet.setOnClickListener(v -> kaydet());
 
+        ImageButton btnAlanEkle = findViewById(R.id.btnAlanEkle);
+        btnAlanEkle.setOnClickListener(v -> gosterAlanEkleSheet());
+
         if (isEdit && editId != -1) {
             yukleForm();
         }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_ALAN && resultCode == RESULT_OK) {
+            Toast.makeText(this, "Alan kaydedildi", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void gosterAlanEkleSheet() {
+        BottomSheetDialog sheet = new BottomSheetDialog(this);
+        View content = LayoutInflater.from(this).inflate(R.layout.sheet_optik_alan_ekle, null);
+        sheet.setContentView(content);
+        content.findViewById(R.id.rowOptikTurEkle).setOnClickListener(v -> {
+            sheet.dismiss();
+            acOptikFormAlanEkleme();
+        });
+        sheet.show();
+    }
+
+    private void acOptikFormAlanEkleme() {
+        String ad = etAd.getText().toString().trim();
+        if (ad.isEmpty()) {
+            etAd.setError("Önce optik adını girin");
+            return;
+        }
+        String kagit = spinnerKagit.getSelectedItem().toString();
+        String yon = spinnerYon.getSelectedItem().toString();
+
+        if (editId != -1) {
+            startAlanActivity(editId);
+            return;
+        }
+
+        executor.execute(() -> {
+            OptikForm form = new OptikForm();
+            form.ad = ad;
+            form.kagit = kagit;
+            form.yon = yon;
+            long id = db.optikFormDao().insert(form);
+            runOnUiThread(() -> {
+                editId = id;
+                isEdit = true;
+                getSupportActionBar().setTitle("Optik Formu Düzenle");
+                startAlanActivity(id);
+            });
+        });
+    }
+
+    private void startAlanActivity(long formId) {
+        Intent i = new Intent(this, YeniOptikFormAlanActivity.class);
+        i.putExtra(Constants.EXTRA_OPTIK_FORM_ID, formId);
+        i.putExtra(Constants.EXTRA_IS_EDIT, false);
+        startActivityForResult(i, REQ_ALAN);
     }
 
     private void yukleForm() {
@@ -87,7 +150,7 @@ public class YeniOptikFormActivity extends AppCompatActivity {
         String yon = spinnerYon.getSelectedItem().toString();
 
         executor.execute(() -> {
-            if (isEdit && editId != -1) {
+            if (editId != -1) {
                 OptikForm form = db.optikFormDao().getById(editId);
                 if (form != null) {
                     form.ad = ad;

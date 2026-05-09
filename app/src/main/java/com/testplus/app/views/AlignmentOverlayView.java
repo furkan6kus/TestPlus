@@ -91,12 +91,18 @@ public class AlignmentOverlayView extends View {
 
     /** Marker merkezleri yeşil çerçeve köşelerine yeterince yakın mı (KagitOkuActivity hesaplar). */
     private boolean guideCornersAligned = true;
+    /** Önizlemede kağıt üzerinde belirgin gölge / düzensiz ışık — geri sayım ve okuma kapalı. */
+    private boolean previewShadowBlocked = false;
 
     private void refreshMainStatus() {
         if (processingText != null) return;
         int found = countDetected();
         if (!tiltOk()) {
             statusText = "Telefonu düz tutun (eğim bozuk)";
+            return;
+        }
+        if (previewShadowBlocked) {
+            statusText = "Gölge veya düzensiz ışık — geri sayım yok, okuma yok. Işığı düzeltin";
             return;
         }
         if (found == 4 && !guideCornersAligned) {
@@ -122,6 +128,21 @@ public class AlignmentOverlayView extends View {
         guideCornersAligned = aligned;
         refreshMainStatus();
         invalidate();
+    }
+
+    public void setPreviewShadowBlocked(boolean blocked) {
+        if (previewShadowBlocked == blocked) return;
+        previewShadowBlocked = blocked;
+        refreshMainStatus();
+        invalidate();
+    }
+
+    public boolean isPreviewShadowBlocked() {
+        return previewShadowBlocked;
+    }
+
+    public boolean areGuideCornersAligned() {
+        return guideCornersAligned;
     }
 
     public void setDetectedCorners(boolean tl, boolean tr, boolean bl, boolean br) {
@@ -162,7 +183,7 @@ public class AlignmentOverlayView extends View {
 
     public boolean tiltOk() {
         if (!tiltAvailable) return true;
-        return Math.abs(pitchDeg) < TILT_OK_DEG && Math.abs(rollDeg) < TILT_OK_DEG;
+        return Math.abs(pitchDeg) <= TILT_OK_DEG && Math.abs(rollDeg) <= TILT_OK_DEG;
     }
 
     /**
@@ -179,6 +200,14 @@ public class AlignmentOverlayView extends View {
 
     public boolean allOk() {
         return markerOk[0] && markerOk[1] && markerOk[2] && markerOk[3];
+    }
+
+    /**
+     * Otomatik / manuel çekim için: eğim + 4 köşe + hizalama + gölge yok.
+     * Gölge varken okuma yapılmaz (yanlış sonuç önlenir).
+     */
+    public boolean isReadyForCapture() {
+        return tiltOk() && allOk() && guideCornersAligned && !previewShadowBlocked;
     }
 
     private int countDetected() {
@@ -229,9 +258,8 @@ public class AlignmentOverlayView extends View {
         outside.addRect(frame, Path.Direction.CCW);
         canvas.drawPath(outside, dimPaint);
 
-        // ── Çerçeve sınırı: yeşile dönmesi için 4 köşe + eğim + hizalama hepsi tamam olmalı.
-        //    Aksi halde beyaz kalır → kullanıcı "henüz hazır değil" sinyalini çerçeveden de görür.
-        boolean readyVisual = allOk() && tiltOk() && guideCornersAligned;
+        // ── Çerçeve sınırı: yeşile dönmesi için 4 köşe + eğim + hizalama + gölge yok.
+        boolean readyVisual = allOk() && tiltOk() && guideCornersAligned && !previewShadowBlocked;
         Paint framePaint = readyVisual ? frameOkPaint : frameBadPaint;
         canvas.drawRect(frame, framePaint);
 
@@ -323,7 +351,8 @@ public class AlignmentOverlayView extends View {
      * Kabarcık merkezi yakaladıkça kullanıcı çekim için doğru pozisyonu bulmuş olur.
      */
     private void drawTiltLevel(Canvas canvas, int w) {
-        boolean ok = tiltOk();
+        // Gölge varken de çekim yok — su terazisi kırmızı kalsın (yanıltıcı yeşil olmasın).
+        boolean ok = tiltOk() && !previewShadowBlocked;
         float radius = dp(54);
         float cx = w / 2f;
         float cy = radius + dp(24);
@@ -397,8 +426,13 @@ public class AlignmentOverlayView extends View {
         sub.setTextSize(dp(11));
         sub.setTextAlign(Paint.Align.CENTER);
         sub.setFakeBoldText(true);
-        canvas.drawText(ok ? "EĞİM TAMAM" : "EĞİMİ DÜZELT",
-            cx, cy + radius + dp(31), sub);
+        String subMsg;
+        if (previewShadowBlocked) {
+            subMsg = tiltOk() ? "ÖNCE IŞIĞI DÜZELT" : "EĞİM VE IŞIK";
+        } else {
+            subMsg = tiltOk() ? "EĞİM TAMAM" : "EĞİMİ DÜZELT";
+        }
+        canvas.drawText(subMsg, cx, cy + radius + dp(31), sub);
         if (!ok) postInvalidateOnAnimation(); // pulse animasyonu için
     }
 

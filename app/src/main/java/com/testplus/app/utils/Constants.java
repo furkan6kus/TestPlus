@@ -23,7 +23,7 @@ public class Constants {
     public static final String CEZA_IKI_BIR = "IKI_BIR";
     public static final String CEZA_BIR_BIR = "BIR_BIR";
 
-    // Desenler
+    /** Tam liste (Sınıf vb.). */
     public static final String[] DESENLER = {
         "0123456789",
         "AB",
@@ -32,6 +32,12 @@ public class Constants {
         "ABCDE",
         "ABCDEFGĞHIİJKLMNOÖPRSŞTUÜVYZ"
     };
+
+    /** Cevaplar ve Kitapçık alanlarında yalnızca bunlar seçilebilir. */
+    public static final String[] DESEN_CEVAP_KITAPCIK = {"AB", "ABC", "ABCD", "ABCDE"};
+
+    /** Ad Soyad alanında yalnızca bu harf deseni. */
+    public static final String DESEN_AD_SOYAD = "ABCDEFGĞHIİJKLMNOÖPRSŞTUÜVYZ";
 
     // Dersler
     public static final String[] DERSLER = {

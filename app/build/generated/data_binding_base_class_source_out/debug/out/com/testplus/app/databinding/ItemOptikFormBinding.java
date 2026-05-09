@@ -4,6 +4,7 @@ package com.testplus.app.databinding;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ImageButton;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -20,14 +21,18 @@ public final class ItemOptikFormBinding implements ViewBinding {
   private final CardView rootView;
 
   @NonNull
+  public final ImageButton btnMore;
+
+  @NonNull
   public final TextView tvAd;
 
   @NonNull
   public final TextView tvBilgi;
 
-  private ItemOptikFormBinding(@NonNull CardView rootView, @NonNull TextView tvAd,
-      @NonNull TextView tvBilgi) {
+  private ItemOptikFormBinding(@NonNull CardView rootView, @NonNull ImageButton btnMore,
+      @NonNull TextView tvAd, @NonNull TextView tvBilgi) {
     this.rootView = rootView;
+    this.btnMore = btnMore;
     this.tvAd = tvAd;
     this.tvBilgi = tvBilgi;
   }
@@ -59,6 +64,12 @@ public final class ItemOptikFormBinding implements ViewBinding {
     // This is done to optimize the compiled bytecode for size and performance.
     int id;
     missingId: {
+      id = R.id.btnMore;
+      ImageButton btnMore = ViewBindings.findChildViewById(rootView, id);
+      if (btnMore == null) {
+        break missingId;
+      }
+
       id = R.id.tvAd;
       TextView tvAd = ViewBindings.findChildViewById(rootView, id);
       if (tvAd == null) {
@@ -71,7 +82,7 @@ public final class ItemOptikFormBinding implements ViewBinding {
         break missingId;
       }
 
-      return new ItemOptikFormBinding((CardView) rootView, tvAd, tvBilgi);
+      return new ItemOptikFormBinding((CardView) rootView, btnMore, tvAd, tvBilgi);
     }
     String missingId = rootView.getResources().getResourceName(id);
     throw new NullPointerException("Missing required view with ID: ".concat(missingId));

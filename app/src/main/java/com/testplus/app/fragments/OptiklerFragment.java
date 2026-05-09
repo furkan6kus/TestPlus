@@ -48,7 +48,7 @@ public class OptiklerFragment extends Fragment {
                 intent.putExtra("form_adi", form.ad);
                 startActivity(intent);
             },
-            form -> showOptionsDialog(form)
+            this::showOptionsDialog
         );
         recyclerView.setAdapter(adapter);
 

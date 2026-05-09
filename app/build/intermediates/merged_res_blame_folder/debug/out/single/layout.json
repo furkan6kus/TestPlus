@@ -1,27 +1,35 @@
 [
     {
+        "merged": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-mergeDebugResources-40:\\layout\\fragment_sinavlar.xml",
+        "source": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-main-43:\\layout\\fragment_sinavlar.xml"
+    },
+    {
         "merged": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-mergeDebugResources-40:\\layout\\activity_main.xml",
         "source": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-main-43:\\layout\\activity_main.xml"
     },
     {
-        "merged": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-mergeDebugResources-40:\\layout\\fragment_sinavlar.xml",
-        "source": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-main-43:\\layout\\fragment_sinavlar.xml"
+        "merged": "com.testplus.app-mergeDebugResources-40:/layout/activity_ogrenci_detay.xml",
+        "source": "com.testplus.app-main-43:/layout/activity_ogrenci_detay.xml"
     },
     {
         "merged": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-mergeDebugResources-40:\\layout\\activity_yeni_sinav.xml",
         "source": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-main-43:\\layout\\activity_yeni_sinav.xml"
     },
     {
+        "merged": "com.testplus.app-mergeDebugResources-40:/layout/activity_yeni_optik_form.xml",
+        "source": "com.testplus.app-main-43:/layout/activity_yeni_optik_form.xml"
+    },
+    {
         "merged": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-mergeDebugResources-40:\\layout\\item_anahtar.xml",
         "source": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-main-43:\\layout\\item_anahtar.xml"
     },
     {
-        "merged": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-mergeDebugResources-40:\\layout\\activity_yeni_optik_form_alan.xml",
-        "source": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-main-43:\\layout\\activity_yeni_optik_form_alan.xml"
+        "merged": "com.testplus.app-mergeDebugResources-40:/layout/sheet_optik_alan_ekle.xml",
+        "source": "com.testplus.app-main-43:/layout/sheet_optik_alan_ekle.xml"
     },
     {
-        "merged": "com.testplus.app-mergeDebugResources-40:/layout/activity_kagit_oku.xml",
-        "source": "com.testplus.app-main-43:/layout/activity_kagit_oku.xml"
+        "merged": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-mergeDebugResources-40:\\layout\\activity_yeni_optik_form_alan.xml",
+        "source": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-main-43:\\layout\\activity_yeni_optik_form_alan.xml"
     },
     {
         "merged": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-mergeDebugResources-40:\\layout\\activity_kagit_oku.xml",
@@ -68,7 +76,15 @@
         "source": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-main-43:\\layout\\fragment_anahtarlar.xml"
     },
     {
+        "merged": "com.testplus.app-mergeDebugResources-40:/layout/activity_optik_form_kanvas.xml",
+        "source": "com.testplus.app-main-43:/layout/activity_optik_form_kanvas.xml"
+    },
+    {
         "merged": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-mergeDebugResources-40:\\layout\\item_sinav.xml",
         "source": "C:\\Users\\furkan\\.gradle\\daemon\\8.2\\com.testplus.app-main-43:\\layout\\item_sinav.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeDebugResources-40:/layout/item_optik_form.xml",
+        "source": "com.testplus.app-main-43:/layout/item_optik_form.xml"
     }
 ]
