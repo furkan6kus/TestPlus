@@ -1,0 +1,74 @@
+[
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/activity_ogrenci_detay.xml",
+        "source": "com.testplus.app-main-42:/layout/activity_ogrenci_detay.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/sheet_optik_alan_ekle.xml",
+        "source": "com.testplus.app-main-42:/layout/sheet_optik_alan_ekle.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/activity_cevap_anahtari.xml",
+        "source": "com.testplus.app-main-42:/layout/activity_cevap_anahtari.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/item_anahtar.xml",
+        "source": "com.testplus.app-main-42:/layout/item_anahtar.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/activity_kagit_oku.xml",
+        "source": "com.testplus.app-main-42:/layout/activity_kagit_oku.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/activity_yeni_optik_form.xml",
+        "source": "com.testplus.app-main-42:/layout/activity_yeni_optik_form.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/fragment_sinavlar.xml",
+        "source": "com.testplus.app-main-42:/layout/fragment_sinavlar.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/item_sinav.xml",
+        "source": "com.testplus.app-main-42:/layout/item_sinav.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/activity_yeni_optik_form_alan.xml",
+        "source": "com.testplus.app-main-42:/layout/activity_yeni_optik_form_alan.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/activity_optik_form_kanvas.xml",
+        "source": "com.testplus.app-main-42:/layout/activity_optik_form_kanvas.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/activity_main.xml",
+        "source": "com.testplus.app-main-42:/layout/activity_main.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/activity_yeni_sinav.xml",
+        "source": "com.testplus.app-main-42:/layout/activity_yeni_sinav.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/fragment_anahtarlar.xml",
+        "source": "com.testplus.app-main-42:/layout/fragment_anahtarlar.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/activity_sinav_detay.xml",
+        "source": "com.testplus.app-main-42:/layout/activity_sinav_detay.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/item_ogrenci.xml",
+        "source": "com.testplus.app-main-42:/layout/item_ogrenci.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/fragment_kagitlar.xml",
+        "source": "com.testplus.app-main-42:/layout/fragment_kagitlar.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/fragment_optikler.xml",
+        "source": "com.testplus.app-main-42:/layout/fragment_optikler.xml"
+    },
+    {
+        "merged": "com.testplus.app-mergeReleaseResources-40:/layout/item_optik_form.xml",
+        "source": "com.testplus.app-main-42:/layout/item_optik_form.xml"
+    }
+]

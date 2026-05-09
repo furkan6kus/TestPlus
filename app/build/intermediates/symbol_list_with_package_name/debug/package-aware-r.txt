@@ -3208,6 +3208,7 @@ id cache_measures
 id callMeasure
 id cameraContainer
 id cancel_button
+id canvasViewport
 id carryVelocity
 id center
 id centerCrop
@@ -3351,6 +3352,7 @@ id inward
 id is_pooling_container_tag
 id italic
 id item_touch_helper_previous_elevation
+id ivRectifiedPreview
 id jumpToEnd
 id jumpToStart
 id kanvasLayout
@@ -3569,7 +3571,6 @@ id stretch
 id submenuarrow
 id submit_area
 id supportScrollUp
-id switchBlokBosluk
 id tabLayout
 id tabMode
 id tag_accessibility_actions
@@ -3630,6 +3631,7 @@ id tvNet
 id tvNumara
 id tvPdf
 id tvPybs
+id tvScanSummary
 id tvSinif
 id tvTamam
 id tvTarih

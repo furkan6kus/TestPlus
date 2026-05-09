@@ -39,6 +39,7 @@ id btnManuelGiris
 id btnMore
 id btnTarih
 id cameraContainer
+id canvasViewport
 id cevaplarContainer
 id cevaplarLayout
 id containerLayout
@@ -53,6 +54,7 @@ id etVeriSayisiStandalone
 id fabEkle
 id fabKagitOku
 id fragmentContainer
+id ivRectifiedPreview
 id kanvasLayout
 id layoutCevaplarExtra
 id layoutVeriSayisiStandalone
@@ -70,7 +72,6 @@ id spinnerKagit
 id spinnerOptikForm
 id spinnerTur
 id spinnerYon
-id switchBlokBosluk
 id tabLayout
 id toolbar
 id tvAd
@@ -85,6 +86,7 @@ id tvNet
 id tvNumara
 id tvPdf
 id tvPybs
+id tvScanSummary
 id tvSinif
 id tvTamam
 id tvTarih

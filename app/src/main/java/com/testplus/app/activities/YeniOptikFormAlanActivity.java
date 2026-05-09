@@ -8,6 +8,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import com.testplus.app.R;
 import com.testplus.app.database.AppDatabase;
+import com.testplus.app.database.entities.OptikForm;
 import com.testplus.app.database.entities.OptikFormAlan;
 import com.testplus.app.utils.Constants;
 import com.testplus.app.views.IsaretlemeAlanView;
@@ -18,7 +19,6 @@ public class YeniOptikFormAlanActivity extends AppCompatActivity {
     private Spinner spinnerTur, spinnerYon, spinnerDesen, spinnerDers;
     private EditText etEtiket, etBlokSayisi, etBloktakiVeriSayisi;
     private EditText etVeriSayisiStandalone, etIlkSoruNo;
-    private Switch switchBlokBosluk;
     private View layoutCevaplarExtra;
     private View layoutVeriSayisiStandalone;
     private IsaretlemeAlanView onIzlemeView;
@@ -44,6 +44,7 @@ public class YeniOptikFormAlanActivity extends AppCompatActivity {
         toolbar.setNavigationOnClickListener(v -> finish());
 
         initViews();
+        applyPreviewPaperScale();
         setupSpinners();
         setupPreviewUpdate();
 
@@ -53,6 +54,17 @@ public class YeniOptikFormAlanActivity extends AppCompatActivity {
         if (isEdit && editAlanId != -1) {
             yukleAlan();
         }
+    }
+
+    private void applyPreviewPaperScale() {
+        executor.execute(() -> {
+            OptikForm form = db.optikFormDao().getById(formId);
+            if (form == null) return;
+            float fs = com.testplus.app.utils.PdfGenerator.getFieldScaleForPage(
+                com.testplus.app.utils.PdfGenerator.getPdfWidth(form),
+                com.testplus.app.utils.PdfGenerator.getPdfHeight(form));
+            runOnUiThread(() -> onIzlemeView.setFieldScale(fs));
+        });
     }
 
     private void initViews() {
@@ -65,7 +77,6 @@ public class YeniOptikFormAlanActivity extends AppCompatActivity {
         etBloktakiVeriSayisi = findViewById(R.id.etBloktakiVeriSayisi);
         etVeriSayisiStandalone = findViewById(R.id.etVeriSayisiStandalone);
         etIlkSoruNo = findViewById(R.id.etIlkSoruNo);
-        switchBlokBosluk = findViewById(R.id.switchBlokBosluk);
         layoutCevaplarExtra = findViewById(R.id.layoutCevaplarExtra);
         layoutVeriSayisiStandalone = findViewById(R.id.layoutVeriSayisiStandalone);
         onIzlemeView = findViewById(R.id.onIzlemeView);
@@ -86,9 +97,11 @@ public class YeniOptikFormAlanActivity extends AppCompatActivity {
                 boolean isCevaplar = (position == 0);
                 layoutCevaplarExtra.setVisibility(isCevaplar ? View.VISIBLE : View.GONE);
                 layoutVeriSayisiStandalone.setVisibility(isCevaplar ? View.GONE : View.VISIBLE);
+                etBlokSayisi.setEnabled(isCevaplar);
                 if (!isCevaplar) {
                     String[] labels = {"Cevaplar", "Kitapçık", "Ad Soyad", "Sınıf"};
                     etEtiket.setText(labels[position]);
+                    etBlokSayisi.setText("1");
                 }
                 bindDesenSpinnerForTur(position, null);
                 updatePreview();
@@ -165,10 +178,15 @@ public class YeniOptikFormAlanActivity extends AppCompatActivity {
         alan.etiket = etEtiket.getText().toString();
         alan.desen = spinnerDesen.getSelectedItem().toString();
         alan.ders = spinnerDers.getSelectedItem() != null ? spinnerDers.getSelectedItem().toString() : "";
-        try { alan.blokSayisi = Integer.parseInt(etBlokSayisi.getText().toString()); } catch (Exception e) { alan.blokSayisi = 1; }
+        if (Constants.TUR_CEVAPLAR.equals(alan.tur)) {
+            try { alan.blokSayisi = Math.max(1, Integer.parseInt(etBlokSayisi.getText().toString())); }
+            catch (Exception e) { alan.blokSayisi = 1; }
+        } else {
+            alan.blokSayisi = 1;
+        }
         alan.bloktakiVeriSayisi = getVeriSayisi();
         try { alan.ilkSoruNumarasi = Integer.parseInt(etIlkSoruNo.getText().toString()); } catch (Exception e) { alan.ilkSoruNumarasi = 1; }
-        alan.blokArasiBosluk = switchBlokBosluk.isChecked();
+        alan.blokArasiBosluk = false;
         return alan;
     }
 
@@ -182,6 +200,15 @@ public class YeniOptikFormAlanActivity extends AppCompatActivity {
         if (isCevaplar) {
             String blok = etBlokSayisi.getText().toString().trim();
             if (blok.isEmpty()) { etBlokSayisi.setError("Zorunludur"); return; }
+            try {
+                if (Integer.parseInt(blok) <= 0) {
+                    etBlokSayisi.setError("1 veya daha büyük olmalı");
+                    return;
+                }
+            } catch (Exception e) {
+                etBlokSayisi.setError("Geçerli sayı girin");
+                return;
+            }
         }
         OptikFormAlan alan = buildAlan();
         alan.formId = formId;
@@ -223,7 +250,6 @@ public class YeniOptikFormAlanActivity extends AppCompatActivity {
                 etBloktakiVeriSayisi.setText(veriStr);
                 etVeriSayisiStandalone.setText(veriStr);
                 if (etIlkSoruNo != null) etIlkSoruNo.setText(alan.ilkSoruNumarasi > 0 ? String.valueOf(alan.ilkSoruNumarasi) : "1");
-                switchBlokBosluk.setChecked(alan.blokArasiBosluk);
                 if (alan.ders != null) {
                     for (int i = 0; i < Constants.DERSLER.length; i++) {
                         if (Constants.DERSLER[i].equals(alan.ders)) { spinnerDers.setSelection(i); break; }

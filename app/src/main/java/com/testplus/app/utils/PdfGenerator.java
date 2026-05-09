@@ -25,6 +25,14 @@ public class PdfGenerator {
     public static final float MARKER_PT = 18f; // corner marker size in pt
     public static final float MARKER_PADDING_PT = 10f; // padding from page edge in pt
     public static final float MARKER_PAD_PT = MARKER_PADDING_PT; // alias (Cloud AI uyumluluğu)
+    private static final float MARKER_PADDING_RATIO = 0.0085f; // short-edge ratio
+    private static final float MARKER_PADDING_MIN_PT = 3f;
+    private static final float FORM_CELL_DP = 24f;
+    private static final float FORM_LABEL_DP = 24f;
+
+    private static boolean isYatayLayout(OptikFormAlan alan) {
+        return Constants.TUR_CEVAPLAR.equals(alan.tur) && Constants.YON_YATAY.equals(alan.yon);
+    }
 
     public static int getPdfWidth(OptikForm form) {
         boolean landscape = Constants.YON_YATAY.equals(form.yon);
@@ -76,14 +84,15 @@ public class PdfGenerator {
         namePaint.setColor(Color.BLACK);
         namePaint.setTextSize(14f);
         namePaint.setTextAlign(Paint.Align.CENTER);
-        float titleY = MARKER_PADDING_PT + 5f;
+        float titleY = getMarkerPaddingPt(pdfW, pdfH) + 5f;
         canvas.drawText(form.ad, pdfW / 2f, titleY, namePaint);
 
+        float fieldScale = getFieldScaleForPage(pdfW, pdfH);
         // Draw each field
         for (OptikFormAlan alan : alanlar) {
             canvas.save();
             canvas.translate(alan.posX * scale, alan.posY * scale);
-            drawField(canvas, alan, scale);
+            drawField(canvas, alan, scale, fieldScale);
             canvas.restore();
         }
 
@@ -135,13 +144,31 @@ public class PdfGenerator {
      * Sıra: top-left, top-right, bottom-left, bottom-right (her biri [left, top, right, bottom]) */
     public static float[][] getMarkerRectsPt(int pdfW, int pdfH) {
         float m = MARKER_PT;
-        float p = MARKER_PADDING_PT;
+        float p = getMarkerPaddingPt(pdfW, pdfH);
         return new float[][] {
             {p, p, p + m, p + m},
             {pdfW - p - m, p, pdfW - p, p + m},
             {p, pdfH - p - m, p + m, pdfH - p},
             {pdfW - p - m, pdfH - p - m, pdfW - p, pdfH - p}
         };
+    }
+
+    /** Marker'ı sayfa kenarına oranlı yerleştir (farklı kağıt boyutlarında tutarlı görünüm). */
+    public static float getMarkerPaddingPt(int pdfW, int pdfH) {
+        float byRatio = Math.min(pdfW, pdfH) * MARKER_PADDING_RATIO;
+        return Math.max(MARKER_PADDING_MIN_PT, byRatio);
+    }
+
+    /** Marker merkezi için kenardan beklenen uzaklık (pt). */
+    public static float getMarkerCenterOffsetPt(int pdfW, int pdfH) {
+        return getMarkerPaddingPt(pdfW, pdfH) + MARKER_PT / 2f;
+    }
+
+    /** A4=1.0; küçük kağıtlarda (özellikle A6) alanlar daha küçük çizilir. */
+    public static float getFieldScaleForPage(int pdfW, int pdfH) {
+        float shortEdge = Math.min(pdfW, pdfH);
+        float ratioToA4 = shortEdge / (float) A4_W;
+        return Math.max(0.58f, Math.min(1f, ratioToA4));
     }
 
     /** Marker merkezlerini PDF point uzayında verir.
@@ -156,25 +183,28 @@ public class PdfGenerator {
         return cs;
     }
 
-    private static void drawField(Canvas canvas, OptikFormAlan alan, float scale) {
-        drawFieldOnCanvas(canvas, alan, scale);
+    private static void drawField(Canvas canvas, OptikFormAlan alan, float scale, float fieldScale) {
+        drawFieldOnCanvas(canvas, alan, scale, fieldScale);
     }
 
     // Draw an optical form field directly on a Canvas (for PDF)
     public static void drawFieldOnCanvas(Canvas canvas, OptikFormAlan alan, float scale) {
-        float cs = 28 * scale; // cell size in pt
-        float lh = 30 * scale; // label height in pt
+        drawFieldOnCanvas(canvas, alan, scale, 1f);
+    }
+
+    public static void drawFieldOnCanvas(Canvas canvas, OptikFormAlan alan, float scale, float fieldScale) {
+        float cs = FORM_CELL_DP * scale * fieldScale; // cell size in pt
+        float lh = FORM_LABEL_DP * scale * fieldScale; // label height in pt
         String desen = alan.desen != null ? alan.desen : "ABCD";
         char[] opts = desen.toCharArray();
         int perBlock = alan.bloktakiVeriSayisi > 0 ? alan.bloktakiVeriSayisi : 5;
         boolean isCevaplar = Constants.TUR_CEVAPLAR.equals(alan.tur);
         int blocks = isCevaplar && alan.blokSayisi > 0 ? alan.blokSayisi : 1;
         int totalQ = perBlock * blocks;
-        boolean yatay = Constants.YON_YATAY.equals(alan.yon);
-        float gapH = alan.blokArasiBosluk && blocks > 1 ? (cs / 2f) * (blocks - 1) : 0f;
-
-        float totalW = yatay ? (opts.length + 1) * cs : (totalQ + 1) * cs;
-        float totalH = yatay ? lh + (totalQ + 1) * cs + gapH : lh + (opts.length + 1) * cs;
+        boolean yatay = isYatayLayout(alan);
+        float blockW = (opts.length + 1) * cs;
+        float totalW = yatay ? blockW * blocks : (totalQ + 1) * cs;
+        float totalH = yatay ? lh + perBlock * cs : lh + (opts.length + 1) * cs;
 
         // Paints
         Paint pLabelBg = new Paint(); pLabelBg.setColor(0xFFFFEBEE);
@@ -210,22 +240,24 @@ public class PdfGenerator {
 
         if (yatay) {
             // Cevaplar: etiket altında doğrudan soru satırları (header yok)
-            int blockGapCount = 0;
-            for (int q = 0; q < totalQ; q++) {
-                if (alan.blokArasiBosluk && q > 0 && q % perBlock == 0) blockGapCount++;
-                float gap = blockGapCount * (cs / 2f);
-                float rowY = lh + q * cs + gap;
-                // Soru numarası
-                canvas.drawRect(0, rowY, cs, rowY + cs, pCellBg);
-                canvas.drawRect(0.5f, rowY + 0.5f, cs - 0.5f, rowY + cs - 0.5f, pBorder);
-                canvas.drawText(String.valueOf(firstQ + q), cs / 2f, rowY + cs / 2f + numOff, pNum);
-                // Şık daireleri (içinde harf)
-                for (int o = 0; o < opts.length; o++) {
-                    float cx = (o + 1) * cs; float cy = rowY;
-                    canvas.drawRect(cx, cy, cx + cs, cy + cs, pCellBg);
-                    canvas.drawRect(cx + 0.5f, cy + 0.5f, cx + cs - 0.5f, cy + cs - 0.5f, pBorder);
-                    canvas.drawCircle(cx + cs / 2f, cy + cs / 2f, cs * 0.38f, pCircle);
-                    canvas.drawText(String.valueOf(opts[o]), cx + cs / 2f, cy + cs / 2f + bubbleOff, pBubbleLetter);
+            for (int b = 0; b < blocks; b++) {
+                float blockX = b * blockW;
+                for (int i = 0; i < perBlock; i++) {
+                    int q = b * perBlock + i;
+                    float rowY = lh + i * cs;
+                    // Soru numarası
+                    canvas.drawRect(blockX, rowY, blockX + cs, rowY + cs, pCellBg);
+                    canvas.drawRect(blockX + 0.5f, rowY + 0.5f, blockX + cs - 0.5f, rowY + cs - 0.5f, pBorder);
+                    canvas.drawText(String.valueOf(firstQ + q), blockX + cs / 2f, rowY + cs / 2f + numOff, pNum);
+                    // Şık daireleri (içinde harf)
+                    for (int o = 0; o < opts.length; o++) {
+                        float cx = blockX + (o + 1) * cs;
+                        float cy = rowY;
+                        canvas.drawRect(cx, cy, cx + cs, cy + cs, pCellBg);
+                        canvas.drawRect(cx + 0.5f, cy + 0.5f, cx + cs - 0.5f, cy + cs - 0.5f, pBorder);
+                        canvas.drawCircle(cx + cs / 2f, cy + cs / 2f, cs * 0.38f, pCircle);
+                        canvas.drawText(String.valueOf(opts[o]), cx + cs / 2f, cy + cs / 2f + bubbleOff, pBubbleLetter);
+                    }
                 }
             }
         } else {
@@ -256,18 +288,25 @@ public class PdfGenerator {
     // Returns pixel coordinates of each bubble center in PDF space
     // Returns map: alanId -> List of (question_index, option_index, x, y)
     public static float[] getBubbleCenter(OptikFormAlan alan, int questionIdx, int optionIdx, float scale) {
-        float cs = 28 * scale;
-        float lh = 30 * scale;
-        boolean yatay = Constants.YON_YATAY.equals(alan.yon);
+        return getBubbleCenter(alan, questionIdx, optionIdx, scale, 1f);
+    }
+
+    public static float[] getBubbleCenter(OptikFormAlan alan, int questionIdx, int optionIdx,
+                                          float scale, float fieldScale) {
+        float cs = FORM_CELL_DP * scale * fieldScale;
+        float lh = FORM_LABEL_DP * scale * fieldScale;
+        boolean yatay = isYatayLayout(alan);
         int perBlock = alan.bloktakiVeriSayisi > 0 ? alan.bloktakiVeriSayisi : 5;
 
         float x, y;
         if (yatay) {
             // Header satırı yok; soru satırları doğrudan etiket altında
             int blockIdx = questionIdx / perBlock;
-            float gapSoFar = alan.blokArasiBosluk ? blockIdx * (cs / 2f) : 0;
-            x = (optionIdx + 1) * cs + cs / 2f;
-            y = lh + questionIdx * cs + gapSoFar + cs / 2f;
+            int idxInBlock = questionIdx % perBlock;
+            float blockW2 = (alan.desen != null ? alan.desen.length() : 4) + 1;
+            float blockX = blockIdx * blockW2 * cs;
+            x = blockX + (optionIdx + 1) * cs + cs / 2f;
+            y = lh + idxInBlock * cs + cs / 2f;
         } else {
             // Etiket + 1 satır boş kutucuk + sonra şık satırları
             x = (questionIdx + 1) * cs + cs / 2f;

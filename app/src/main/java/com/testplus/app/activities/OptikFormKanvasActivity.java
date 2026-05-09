@@ -5,7 +5,6 @@ import android.graphics.*;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
-import android.util.DisplayMetrics;
 import android.view.*;
 import android.widget.*;
 import androidx.appcompat.app.AppCompatActivity;
@@ -24,17 +23,19 @@ import java.util.concurrent.Executors;
 
 public class OptikFormKanvasActivity extends AppCompatActivity {
 
-    private static final int GRID_DP = 20;
+    private static final int GRID_DP = 24;
     private static final int REQUEST_ADD = 1001;
     private static final int REQUEST_EDIT = 1002;
 
     private FrameLayout kanvasLayout;
+    private View canvasViewport;
     private long formId;
     private OptikForm optikForm;
     private AppDatabase db;
     private ExecutorService executor = Executors.newSingleThreadExecutor();
     private float density;
     private float canvasScale = 1f; // ekran genişliğine göre A4 küçültme oranı
+    private float fieldScale = 1f; // kağıt boyutuna göre alan ölçeği
     private int canvasWidthPx, canvasHeightPx;
 
     @Override
@@ -53,6 +54,7 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
         toolbar.setNavigationOnClickListener(v -> finish());
 
         kanvasLayout = findViewById(R.id.kanvasLayout);
+        canvasViewport = findViewById(R.id.canvasViewport);
 
         // Save button
         TextView tvKaydet = findViewById(R.id.tvKaydet);
@@ -74,8 +76,9 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
             runOnUiThread(() -> {
                 if (optikForm != null) {
                     setupCanvas(optikForm);
+                } else {
+                    yukleAlanlar();
                 }
-                yukleAlanlar();
             });
         });
     }
@@ -83,37 +86,43 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
     private void setupCanvas(OptikForm form) {
         int wDp = PdfGenerator.getCanvasWidthDp(form);
         int hDp = PdfGenerator.getCanvasHeightDp(form);
+        fieldScale = PdfGenerator.getFieldScaleForPage(
+            PdfGenerator.getPdfWidth(form), PdfGenerator.getPdfHeight(form));
+        canvasViewport.post(() -> {
+            int idealWidthPx = dpToPx(wDp);
+            int idealHeightPx = dpToPx(hDp);
+            int availableWidthPx = Math.max(1, canvasViewport.getWidth() - canvasViewport.getPaddingLeft() - canvasViewport.getPaddingRight());
+            int availableHeightPx = Math.max(1, canvasViewport.getHeight() - canvasViewport.getPaddingTop() - canvasViewport.getPaddingBottom());
 
-        // Ekran genişliğine göre kağıt oranı korunarak ölçek hesapla
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        int screenWidthPx = dm.widthPixels;
-        int paddingPx = dpToPx(16); // sağ-sol toplam kenar boşluğu
-        int availableWidthPx = screenWidthPx - paddingPx;
+            // Kağıt her zaman ekrana tamamen sığsın; sağa kaydırma olmasın.
+            float scaleW = (float) availableWidthPx / idealWidthPx;
+            float scaleH = (float) availableHeightPx / idealHeightPx;
+            canvasScale = Math.min(scaleW, scaleH);
 
-        int idealWidthPx = dpToPx(wDp);
-        canvasScale = Math.min(1f, (float) availableWidthPx / idealWidthPx);
+            canvasWidthPx = Math.round(idealWidthPx * canvasScale);
+            canvasHeightPx = Math.round(idealHeightPx * canvasScale);
 
-        canvasWidthPx = Math.round(idealWidthPx * canvasScale);
-        canvasHeightPx = Math.round(dpToPx(hDp) * canvasScale);
+            kanvasLayout.setMinimumWidth(canvasWidthPx);
+            kanvasLayout.setMinimumHeight(canvasHeightPx);
 
-        kanvasLayout.setMinimumWidth(canvasWidthPx);
-        kanvasLayout.setMinimumHeight(canvasHeightPx);
+            float gridPx = getGridStepPx();
+            int pdfW = PdfGenerator.getPdfWidth(form);
+            int pdfH = PdfGenerator.getPdfHeight(form);
+            int canvasWdp = PdfGenerator.getCanvasWidthDp(form);
+            float ptToDpX = canvasWdp / (float) pdfW;
+            float markerSizePx = PdfGenerator.MARKER_PT * ptToDpX * density * canvasScale;
+            kanvasLayout.setBackground(new GridDrawable(
+                gridPx, getGridOriginX(), getGridOriginY(),
+                getSafeInsetXPx(), getSafeInsetYPx(), markerSizePx));
 
-        // Grid arkaplanı (grid hücreleri de aynı oranda küçültülür)
-        float gridPx = dpToPx(GRID_DP) * canvasScale;
-        // Köşe markerlarını dp uzayında hesapla (PDF -> dp ölçeği)
-        int pdfW = PdfGenerator.getPdfWidth(form);
-        float pdfToDp = (float) wDp / pdfW;
-        float markerSizePx = PdfGenerator.MARKER_PT * pdfToDp * density * canvasScale;
-        float markerPadPx = PdfGenerator.MARKER_PADDING_PT * pdfToDp * density * canvasScale;
-        kanvasLayout.setBackground(new GridDrawable(gridPx, markerSizePx, markerPadPx));
-
-        ViewGroup.LayoutParams lp = kanvasLayout.getLayoutParams();
-        if (lp != null) {
-            lp.width = canvasWidthPx;
-            lp.height = canvasHeightPx;
-            kanvasLayout.setLayoutParams(lp);
-        }
+            ViewGroup.LayoutParams lp = kanvasLayout.getLayoutParams();
+            if (lp != null) {
+                lp.width = canvasWidthPx;
+                lp.height = canvasHeightPx;
+                kanvasLayout.setLayoutParams(lp);
+            }
+            yukleAlanlar();
+        });
     }
 
     @Override
@@ -134,6 +143,7 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
 
     private void addAlanView(OptikFormAlan alan) {
         IsaretlemeAlanView view = new IsaretlemeAlanView(this, alan);
+        view.setFieldScale(fieldScale);
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
         view.setLayoutParams(lp);
@@ -142,11 +152,21 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
         view.setPivotY(0f);
         view.setScaleX(canvasScale);
         view.setScaleY(canvasScale);
-        view.setX(alan.posX * density * canvasScale);
-        view.setY(alan.posY * density * canvasScale);
+        PointF initial = normalizeToGridAndBounds(
+            view,
+            alan.posX * density * canvasScale,
+            alan.posY * density * canvasScale
+        );
+        view.setX(initial.x);
+        view.setY(initial.y);
         view.setElevation(4 * density);
         view.setOnTouchListener(new AlanTouchHandler(alan, view));
         kanvasLayout.addView(view);
+        view.post(() -> {
+            PointF p = normalizeToGridAndBounds(view, view.getX(), view.getY());
+            view.setX(p.x);
+            view.setY(p.y);
+        });
     }
 
     private void showPopup(OptikFormAlan alan, View anchor) {
@@ -179,8 +199,9 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
                     IsaretlemeAlanView iav = (IsaretlemeAlanView) v;
                     OptikFormAlan alan = iav.getAlan();
                     if (alan != null) {
-                        alan.posX = v.getX() / density / canvasScale;
-                        alan.posY = v.getY() / density / canvasScale;
+                        PointF p = normalizeToGridAndBounds(v, v.getX(), v.getY());
+                        alan.posX = p.x / density / canvasScale;
+                        alan.posY = p.y / density / canvasScale;
                         db.optikFormAlanDao().update(alan);
                     }
                 }
@@ -200,10 +221,11 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
                     IsaretlemeAlanView iav = (IsaretlemeAlanView) v;
                     OptikFormAlan alan = iav.getAlan();
                     if (alan != null) {
+                        PointF p = normalizeToGridAndBounds(v, v.getX(), v.getY());
                         for (OptikFormAlan a : alanlar) {
                             if (a.id == alan.id) {
-                                a.posX = v.getX() / density / canvasScale;
-                                a.posY = v.getY() / density / canvasScale;
+                                a.posX = p.x / density / canvasScale;
+                                a.posY = p.y / density / canvasScale;
                                 break;
                             }
                         }
@@ -248,10 +270,92 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
 
     private int dpToPx(int dp) { return Math.round(dp * density); }
 
+    private float getSafeInsetXPx() {
+        if (optikForm == null) return 0f;
+        int pdfW = PdfGenerator.getPdfWidth(optikForm);
+        int pdfH = PdfGenerator.getPdfHeight(optikForm);
+        int canvasWdp = PdfGenerator.getCanvasWidthDp(optikForm);
+        float ptToDpX = canvasWdp / (float) pdfW;
+        float insetPt = PdfGenerator.getMarkerPaddingPt(pdfW, pdfH) + PdfGenerator.MARKER_PT + 2f;
+        return insetPt * ptToDpX * density * canvasScale;
+    }
+
+    private float getSafeInsetYPx() {
+        if (optikForm == null) return 0f;
+        int pdfW = PdfGenerator.getPdfWidth(optikForm);
+        int pdfH = PdfGenerator.getPdfHeight(optikForm);
+        int canvasHdp = PdfGenerator.getCanvasHeightDp(optikForm);
+        float ptToDpY = canvasHdp / (float) pdfH;
+        float markerInsetPt = PdfGenerator.getMarkerPaddingPt(pdfW, pdfH) + PdfGenerator.MARKER_PT + 2f;
+        float topTitleInsetPt = PdfGenerator.getMarkerPaddingPt(pdfW, pdfH) + 16f;
+        float insetPt = Math.max(markerInsetPt, topTitleInsetPt);
+        return insetPt * ptToDpY * density * canvasScale;
+    }
+
+    private PointF clampToSafeBounds(View v, float x, float y) {
+        float insetX = getSafeInsetXPx();
+        float insetY = getSafeInsetYPx();
+        float w = v.getWidth() * canvasScale;
+        float h = v.getHeight() * canvasScale;
+
+        float step = Math.max(1f, getGridStepPx());
+        float originX = getGridOriginX();
+        float originY = getGridOriginY();
+        float minX = originX + (float) Math.ceil((insetX - originX) / step) * step;
+        float minY = originY + (float) Math.ceil((insetY - originY) / step) * step;
+        float maxX = canvasWidthPx - insetX - w;
+        float maxY = canvasHeightPx - insetY - h;
+
+        if (maxX < minX) {
+            float centered = Math.max(0f, (canvasWidthPx - w) / 2f);
+            minX = centered;
+            maxX = centered;
+        }
+        if (maxY < minY) {
+            float centered = Math.max(0f, (canvasHeightPx - h) / 2f);
+            minY = centered;
+            maxY = centered;
+        }
+        return new PointF(
+            Math.max(minX, Math.min(x, maxX)),
+            Math.max(minY, Math.min(y, maxY))
+        );
+    }
+
     private float snapToGrid(float valuePx) {
         // Grid hücreleri kanvas ölçeğine göre küçülür; snap o boyuta göre yapılmalı
-        float gridPx = GRID_DP * density * canvasScale;
+        float gridPx = getGridStepPx();
         return Math.round(valuePx / gridPx) * gridPx;
+    }
+
+    private PointF snapToGridWithOrigin(float x, float y) {
+        float originX = getGridOriginX();
+        float originY = getGridOriginY();
+        float sx = originX + snapToGrid(x - originX);
+        float sy = originY + snapToGrid(y - originY);
+        return new PointF(sx, sy);
+    }
+
+    private PointF normalizeToGridAndBounds(View v, float x, float y) {
+        PointF clamped = clampToSafeBounds(v, x, y);
+        PointF snapped = snapToGridWithOrigin(clamped.x, clamped.y);
+        return clampToSafeBounds(v, snapped.x, snapped.y);
+    }
+
+    private float getGridStepPx() {
+        return GRID_DP * density * fieldScale * canvasScale;
+    }
+
+    private float getGridOriginX() {
+        float step = Math.max(1f, getGridStepPx());
+        float rem = canvasWidthPx % step;
+        return rem / 2f;
+    }
+
+    private float getGridOriginY() {
+        float step = Math.max(1f, getGridStepPx());
+        float rem = canvasHeightPx % step;
+        return rem / 2f;
     }
 
     // ─── Alan Touch Handler (drag + long-press + tap) ─────────────────────────
@@ -323,13 +427,10 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
                         }
                     }
                     if (isDragging) {
-                        // Kanvas sınırları içinde tut
-                        float maxX = Math.max(0, canvasWidthPx - v.getWidth() * canvasScale);
-                        float maxY = Math.max(0, canvasHeightPx - v.getHeight() * canvasScale);
-                        float clampedX = Math.max(0, Math.min(newX, maxX));
-                        float clampedY = Math.max(0, Math.min(newY, maxY));
-                        v.setX(clampedX);
-                        v.setY(clampedY);
+                        // Güvenli baskı alanı içinde tut (kenara yaslanıp bozulma olmasın).
+                        PointF p = clampToSafeBounds(v, newX, newY);
+                        v.setX(p.x);
+                        v.setY(p.y);
                     }
                     return true;
 
@@ -339,11 +440,10 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
                         v.getParent().requestDisallowInterceptTouchEvent(false);
                     }
                     if (isDragging) {
-                        float snappedX = snapToGrid(v.getX());
-                        float snappedY = snapToGrid(v.getY());
-                        v.animate().x(snappedX).y(snappedY).setDuration(100).start();
-                        alan.posX = snappedX / density / canvasScale;
-                        alan.posY = snappedY / density / canvasScale;
+                        PointF p = normalizeToGridAndBounds(v, v.getX(), v.getY());
+                        v.animate().x(p.x).y(p.y).setDuration(100).start();
+                        alan.posX = p.x / density / canvasScale;
+                        alan.posY = p.y / density / canvasScale;
                         isDragging = false;
                     }
                     return true;
@@ -357,22 +457,33 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
         private final Paint paintBg = new Paint();
         private final Paint paintGrid = new Paint();
         private final Paint paintBorder = new Paint();
+        private final Paint paintSafe = new Paint();
         private final Paint paintMarker = new Paint();
         private final float gridSize;
+        private final float originX;
+        private final float originY;
+        private final float insetX;
+        private final float insetY;
         private final float markerSize;
-        private final float markerPad;
 
-        GridDrawable(float gridSize, float markerSize, float markerPad) {
+        GridDrawable(float gridSize, float originX, float originY,
+                     float insetX, float insetY, float markerSize) {
             this.gridSize = gridSize;
+            this.originX = originX;
+            this.originY = originY;
+            this.insetX = insetX;
+            this.insetY = insetY;
             this.markerSize = markerSize;
-            this.markerPad = markerPad;
             paintBg.setColor(Color.WHITE);
             paintGrid.setColor(0xFFEEEEEE);
             paintGrid.setStrokeWidth(1f);
             paintBorder.setColor(0xFF9E9E9E);
             paintBorder.setStyle(Paint.Style.STROKE);
             paintBorder.setStrokeWidth(2f);
-            paintMarker.setColor(Color.BLACK);
+            paintSafe.setColor(0x4481C784);
+            paintSafe.setStyle(Paint.Style.STROKE);
+            paintSafe.setStrokeWidth(1f);
+            paintMarker.setColor(0xFF424242);
             paintMarker.setStyle(Paint.Style.FILL);
         }
 
@@ -380,24 +491,21 @@ public class OptikFormKanvasActivity extends AppCompatActivity {
         public void draw(Canvas canvas) {
             Rect b = getBounds();
             canvas.drawRect(b, paintBg);
-            for (float x = 0; x <= b.width(); x += gridSize)
+            for (float x = originX; x <= b.width(); x += gridSize)
                 canvas.drawLine(x, 0, x, b.height(), paintGrid);
-            for (float y = 0; y <= b.height(); y += gridSize)
+            for (float y = originY; y <= b.height(); y += gridSize)
                 canvas.drawLine(0, y, b.width(), y, paintGrid);
             canvas.drawRect(b.left + 1, b.top + 1, b.right - 1, b.bottom - 1, paintBorder);
+            canvas.drawRect(insetX, insetY, b.width() - insetX, b.height() - insetY, paintSafe);
 
-            // Köşe markerları (siyah kareler) - kullanıcı bu bölgeye alan koymasın
-            float p = markerPad;
+            // Köşe markerları (görsel referans): güvenli alanın dışında köşelerde gösterilir.
             float m = markerSize;
-            // top-left
-            canvas.drawRect(p, p, p + m, p + m, paintMarker);
-            // top-right
-            canvas.drawRect(b.right - p - m, p, b.right - p, p + m, paintMarker);
-            // bottom-left
-            canvas.drawRect(p, b.bottom - p - m, p + m, b.bottom - p, paintMarker);
-            // bottom-right
-            canvas.drawRect(b.right - p - m, b.bottom - p - m,
-                            b.right - p, b.bottom - p, paintMarker);
+            float p = Math.max(2f, insetX - m - 2f);
+            float q = Math.max(2f, insetY - m - 2f);
+            canvas.drawRect(p, q, p + m, q + m, paintMarker);
+            canvas.drawRect(b.width() - p - m, q, b.width() - p, q + m, paintMarker);
+            canvas.drawRect(p, b.height() - q - m, p + m, b.height() - q, paintMarker);
+            canvas.drawRect(b.width() - p - m, b.height() - q - m, b.width() - p, b.height() - q, paintMarker);
         }
 
         @Override public void setAlpha(int alpha) {}

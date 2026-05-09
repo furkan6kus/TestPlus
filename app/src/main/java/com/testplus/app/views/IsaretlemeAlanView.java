@@ -9,14 +9,15 @@ import com.testplus.app.utils.Constants;
 
 public class IsaretlemeAlanView extends View {
 
-    private static final int CELL_DP = 28;
-    private static final int LABEL_DP = 30;
+    private static final int CELL_DP = 24;
+    private static final int LABEL_DP = 24;
 
     private Paint paintLabelBg, paintLabelText, paintCellBg, paintCellBorder,
             paintCircleStroke, paintHeaderText, paintNumberText, paintBubbleLetter;
 
     private OptikFormAlan alan;
     private float density;
+    private float fieldScale = 1f;
 
     public OptikFormAlan getAlan() { return alan; }
 
@@ -82,6 +83,15 @@ public class IsaretlemeAlanView extends View {
         invalidate();
     }
 
+    /** Kağıt boyutuna göre alan hücre ölçeği (A4=1.0, A6 daha küçük). */
+    public void setFieldScale(float scale) {
+        float clamped = Math.max(0.5f, Math.min(1.2f, scale));
+        if (Math.abs(this.fieldScale - clamped) < 0.001f) return;
+        this.fieldScale = clamped;
+        requestLayout();
+        invalidate();
+    }
+
     private int dpToPx(int dp) { return Math.round(dp * density); }
 
     private int getTotalQuestions() {
@@ -98,26 +108,28 @@ public class IsaretlemeAlanView extends View {
     }
 
     private boolean isYatay() {
-        return alan == null || Constants.YON_YATAY.equals(alan.yon);
+        if (alan == null) return true;
+        // Harf tabanlı/metin alanlarında (Ad Soyad, Sınıf, Kitapçık) numaralı yatay görünüm
+        // yerine her zaman dikey düzen kullanılır.
+        return Constants.TUR_CEVAPLAR.equals(alan.tur) && Constants.YON_YATAY.equals(alan.yon);
     }
 
     @Override
     protected void onMeasure(int widthSpec, int heightSpec) {
         if (alan == null) { setMeasuredDimension(200, 200); return; }
-        int cs = dpToPx(CELL_DP);
-        int lh = dpToPx(LABEL_DP);
+        int cs = Math.round(CELL_DP * density * fieldScale);
+        int lh = Math.round(LABEL_DP * density * fieldScale);
         int opts = getOptions().length;
         int questions = getTotalQuestions();
         int perBlock = alan.bloktakiVeriSayisi > 0 ? alan.bloktakiVeriSayisi : 5;
         boolean isCevaplar = Constants.TUR_CEVAPLAR.equals(alan.tur);
         int blocks = isCevaplar && alan.blokSayisi > 0 ? alan.blokSayisi : 1;
-        int gapPx = alan.blokArasiBosluk && blocks > 1 ? (cs / 2) * (blocks - 1) : 0;
-
         int w, h;
         if (isYatay()) {
-            // YATAY (Cevaplar): label + numara sutunu + opts kolonu, header satırı YOK
-            w = (opts + 1) * cs;
-            h = lh + questions * cs + gapPx;
+            // YATAY (Cevaplar): bloklar yan yana
+            int blockW = (opts + 1) * cs;
+            w = blockW * blocks;
+            h = lh + perBlock * cs;
         } else {
             // DIKEY (Ad Soyad/Sınıf/Kitapçık): label + bos isim satırı + opts satırları
             w = (questions + 1) * cs;
@@ -129,7 +141,7 @@ public class IsaretlemeAlanView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         if (alan == null) return;
-        draw(canvas, density);
+        draw(canvas, density * fieldScale);
     }
 
     /** Shared draw logic. scale = density for screen, or ptPerDp for PDF. */
@@ -146,10 +158,10 @@ public class IsaretlemeAlanView extends View {
 
         // Measure total width/height
         float totalW, totalH;
-        float gapH = alan.blokArasiBosluk && blocks > 1 ? (cs / 2) * (blocks - 1) : 0;
         if (isYatay()) {
-            totalW = (opts.length + 1) * cs;
-            totalH = lh + questions * cs + gapH; // header satırı yok
+            float blockW = (opts.length + 1) * cs;
+            totalW = blockW * blocks;
+            totalH = lh + perBlock * cs; // header satırı yok
         } else {
             totalW = (questions + 1) * cs;
             totalH = lh + (opts.length + 1) * cs;
@@ -178,24 +190,26 @@ public class IsaretlemeAlanView extends View {
                             char[] opts, int questions, int perBlock, int blocks) {
         // Cevaplar (YATAY) — Etiket altında doğrudan soru satırları
         // (A,B,C,D başlık satırı YOK, harfler dairelerin içinde zaten görünüyor)
-        int blockGapCount = 0;
         int firstQ = alan.ilkSoruNumarasi > 0 ? alan.ilkSoruNumarasi : 1;
         paintBubbleLetter.setTextSize(cs * 0.45f);
         paintNumberText.setTextSize(cs * 0.5f);
-        for (int q = 0; q < questions; q++) {
-            if (alan.blokArasiBosluk && q > 0 && q % perBlock == 0) blockGapCount++;
-            float gapSoFar = blockGapCount * (cs / 2f);
-            float rowY = lh + q * cs + gapSoFar;
+        float blockW = (opts.length + 1) * cs;
+        for (int b = 0; b < blocks; b++) {
+            float blockX = b * blockW;
+            for (int i = 0; i < perBlock; i++) {
+                int q = b * perBlock + i;
+                float rowY = lh + i * cs;
 
-            // Soru numarası hücresi (sol sütun)
-            drawCellBg(canvas, 0, rowY, cs);
-            canvas.drawText(String.valueOf(firstQ + q), cs / 2f,
-                    rowY + cs / 2f + getTextOffset(paintNumberText), paintNumberText);
+                // Soru numarası hücresi (sol sütun)
+                drawCellBg(canvas, blockX, rowY, cs);
+                canvas.drawText(String.valueOf(firstQ + q), blockX + cs / 2f,
+                        rowY + cs / 2f + getTextOffset(paintNumberText), paintNumberText);
 
-            // Şık hücreleri (her dairenin içinde harf)
-            for (int o = 0; o < opts.length; o++) {
-                float cellX = (o + 1) * cs;
-                drawBubbleCell(canvas, cellX, rowY, cs, String.valueOf(opts[o]));
+                // Şık hücreleri (her dairenin içinde harf)
+                for (int o = 0; o < opts.length; o++) {
+                    float cellX = blockX + (o + 1) * cs;
+                    drawBubbleCell(canvas, cellX, rowY, cs, String.valueOf(opts[o]));
+                }
             }
         }
     }
