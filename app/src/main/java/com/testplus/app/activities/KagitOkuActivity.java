@@ -86,6 +86,13 @@ public class KagitOkuActivity extends AppCompatActivity {
     private long lastShadowToastNs = 0L;
     private static final long SHADOW_TOAST_INTERVAL_NS = 2_800_000_000L; // ~2.8 sn
 
+    // ─── Köşe koordinatı yumuşatma (EMA) ─────────────────────────────────────
+    /** Her frame'in katkı oranı: 0.35 → ~3 frame'lik zaman sabiti. */
+    private static final float CORNER_EMA_ALPHA = 0.35f;
+    /** Bu kadar px'den büyük anlık sıçramada EMA sıfırlanır (gerçek kamera hareketi). */
+    private static final float CORNER_RESET_DIST_PX = 90f;
+    private final PointF[] smoothedScreenCorners = new PointF[4];
+
     // ─── Eğim sensörü (telefonu kağıda paralel tutmak için) ──────────────────
     private SensorManager sensorManager;
     private Sensor rotationSensor;
@@ -760,7 +767,9 @@ public class KagitOkuActivity extends AppCompatActivity {
             boolean[] ok = mapCornersToScreenQuadrants(corners, rotDeg);
 
             // Tespit edilen image-space köşeleri ekran piksel koordinatlarına çevir
-            final PointF[] screenCorners = mapCornersToScreenSpace(corners, rotDeg, w, h);
+            final PointF[] rawScreenCorners = mapCornersToScreenSpace(corners, rotDeg, w, h);
+            // EMA ile yumuşat: kamera otopozlamasından kaynaklı titremeler kaybolur.
+            final PointF[] screenCorners = applyCornerEma(rawScreenCorners);
 
             boolean allOk = ok[0] && ok[1] && ok[2] && ok[3];
             // Eğim eşik dışındayken homografi sapacak, OMR yanlış okuyacak.
@@ -979,6 +988,39 @@ public class KagitOkuActivity extends AppCompatActivity {
         int pct = (int) (100f * capturedW / frame.width());
         return String.format(java.util.Locale.US,
             "kağıt çok küçük (çerçevenin %%%d'i) — telefonu yaklaştırın", pct);
+    }
+
+    /**
+     * Ekran köşe koordinatlarına EMA (üstel hareketli ortalama) uygular.
+     * Küçük titremeler bastırılır; büyük anlık sıçramalarda (telefon gerçekten hareket etti)
+     * EMA sıfırlanarak yeni konuma hızla yaklaşır.
+     */
+    private PointF[] applyCornerEma(PointF[] raw) {
+        PointF[] result = new PointF[4];
+        for (int i = 0; i < 4; i++) {
+            if (raw[i] == null) {
+                smoothedScreenCorners[i] = null;
+                result[i] = null;
+            } else if (smoothedScreenCorners[i] == null) {
+                smoothedScreenCorners[i] = new PointF(raw[i].x, raw[i].y);
+                result[i] = new PointF(raw[i].x, raw[i].y);
+            } else {
+                float dx = raw[i].x - smoothedScreenCorners[i].x;
+                float dy = raw[i].y - smoothedScreenCorners[i].y;
+                float dist = (float) Math.sqrt(dx * dx + dy * dy);
+                if (dist > CORNER_RESET_DIST_PX) {
+                    // Gerçek kamera sıçraması — EMA'yı sıfırla
+                    smoothedScreenCorners[i].set(raw[i].x, raw[i].y);
+                } else {
+                    smoothedScreenCorners[i].x =
+                        CORNER_EMA_ALPHA * raw[i].x + (1f - CORNER_EMA_ALPHA) * smoothedScreenCorners[i].x;
+                    smoothedScreenCorners[i].y =
+                        CORNER_EMA_ALPHA * raw[i].y + (1f - CORNER_EMA_ALPHA) * smoothedScreenCorners[i].y;
+                }
+                result[i] = new PointF(smoothedScreenCorners[i].x, smoothedScreenCorners[i].y);
+            }
+        }
+        return result;
     }
 
     private boolean markersNearGuideCorners(PointF[] screenCorners) {
