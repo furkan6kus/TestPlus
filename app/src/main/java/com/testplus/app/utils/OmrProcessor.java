@@ -1155,25 +1155,32 @@ public class OmrProcessor {
         // Arama pencereleri SADECE kağıt içinde kalmalı.
         // edgePad dışarı taşıyordu: kamera arka planı (~siyah) pass-1 merkezini
         // köşeye çekiyor, gerçek siyah kare bulunamıyordu.
-        int tlX0 = Math.max(0, pl);
-        int tlY0 = Math.max(0, ptop);
+        // Ek olarak: kağıt kenarındaki yumuşak gri geçiş (anti-alias / hafif gölge)
+        // pass-1 eşiğinin altına düşüp centroid'i kenara çekebiliyor. Bu yüzden
+        // pencereyi kağıt kenarından küçük bir buffer (markerInset) kadar içeriden
+        // başlat — marker kenardan ~10pt (≈markerPx/2) uzakta olduğu için tamamen
+        // içeride kalır.
+        int markerInset = Math.max(6, expectedMarkerPx / 4);
+
+        int tlX0 = Math.max(0, pl + markerInset);
+        int tlY0 = Math.max(0, ptop + markerInset);
         int tlX1 = pl + sw;
         int tlY1 = ptop + sh;
 
         int trX0 = Math.max(0, pr - sw);
-        int trY0 = Math.max(0, ptop);
-        int trX1 = Math.min(imgW, pr);
+        int trY0 = Math.max(0, ptop + markerInset);
+        int trX1 = Math.min(imgW, pr - markerInset);
         int trY1 = ptop + sh;
 
-        int blX0 = Math.max(0, pl);
+        int blX0 = Math.max(0, pl + markerInset);
         int blY0 = Math.max(0, pb - sh);
         int blX1 = pl + sw;
-        int blY1 = Math.min(imgH, pb);
+        int blY1 = Math.min(imgH, pb - markerInset);
 
         int brX0 = Math.max(0, pr - sw);
         int brY0 = Math.max(0, pb - sh);
-        int brX1 = Math.min(imgW, pr);
-        int brY1 = Math.min(imgH, pb);
+        int brX1 = Math.min(imgW, pr - markerInset);
+        int brY1 = Math.min(imgH, pb - markerInset);
 
         PointF[] corners = new PointF[4];
         corners[0] = findMarkerCenter(pixels, imgW, imgH,
