@@ -653,6 +653,40 @@ public class OmrProcessor {
         if (top >= bottom || left >= right) {
             return new int[]{0, 0, imgW, imgH};
         }
+
+        // Rafine sol/sağ kenar: spiral cilt veya koyu kenar şeritlerini atla.
+        // Sütunun orta %60'ına bak; eğer o sütun %88+ parlak ise gerçek kağıt kenarı.
+        // Spiral bobin: bobin telleri arası ~%60-75 parlak → eşiğin altında → atlanır.
+        // Normal beyaz kağıt: ~%95+ parlak → eşiği geçer → kenar belirlenir.
+        int midTop    = top + (bottom - top) / 5;
+        int midBottom = bottom - (bottom - top) / 5;
+        int refStep   = Math.max(1, (midBottom - midTop) / 80);
+        int maxRefine = Math.min(120, (right - left) / 4);
+        float solidThresh = 0.88f;
+
+        for (int x = left + 1; x < left + maxRefine; x++) {
+            int brightCnt = 0, totalCnt = 0;
+            for (int y = midTop; y < midBottom; y += refStep) {
+                if (pixelLuma(pixels[y * imgW + x]) > PAPER_BRIGHT_THRESHOLD) brightCnt++;
+                totalCnt++;
+            }
+            if (totalCnt > 0 && (float) brightCnt / totalCnt >= solidThresh) {
+                left = x;
+                break;
+            }
+        }
+        for (int x = right - 1; x > right - maxRefine; x--) {
+            int brightCnt = 0, totalCnt = 0;
+            for (int y = midTop; y < midBottom; y += refStep) {
+                if (pixelLuma(pixels[y * imgW + x]) > PAPER_BRIGHT_THRESHOLD) brightCnt++;
+                totalCnt++;
+            }
+            if (totalCnt > 0 && (float) brightCnt / totalCnt >= solidThresh) {
+                right = x;
+                break;
+            }
+        }
+
         // 2% genişlet — köşe markerları kağıt kenarına çok yakın
         int padX = Math.max(2, (right - left) / 50);
         int padY = Math.max(2, (bottom - top) / 50);
