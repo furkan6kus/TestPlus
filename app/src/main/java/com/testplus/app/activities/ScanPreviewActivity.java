@@ -1,38 +1,47 @@
 package com.testplus.app.activities;
 
 import android.graphics.Bitmap;
+import android.graphics.PointF;
 import android.os.Bundle;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.widget.*;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import com.testplus.app.R;
 import com.testplus.app.utils.DocumentScanner;
+import com.testplus.app.views.PolygonView;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * CamScanner benzeri tarama önizleme ekranı.
- * DocumentScanner.consumePending() ile alınan perspektif düzeltilmiş bitmap'i gösterir,
- * kontrast ayarı yapılmasına izin verir ve kullanıcı onayı beklenir.
+ * OpenScan benzeri interaktif tarama önizleme ekranı.
+ *
+ * Akış:
+ *   1. DocumentScanner'dan ham bitmap + tespit edilen köşeler alınır
+ *   2. Ham görüntü ImageView'de gösterilir; PolygonView sürüklenebilir köşeler çizer
+ *   3. Kullanıcı köşeleri gerekirse sürükleyerek düzeltir
+ *   4. "Onayla ve Tara": köşelerle perspektif warp + kontrast → OMR'a gönder
  */
 public class ScanPreviewActivity extends AppCompatActivity {
 
-    private ImageView ivPreview;
+    private ImageView  ivPreview;
+    private PolygonView polygonView;
     private ProgressBar progressBar;
-    private SeekBar seekContrast;
-    private TextView tvContrast;
-    private Button btnRetake;
-    private Button btnConfirm;
+    private TextView   tvHint;
+    private SeekBar    seekContrast;
+    private TextView   tvContrast;
+    private Button     btnRetake;
+    private Button     btnConfirm;
 
-    /** Perspektif düzeltilmiş, orijinal (kontrast uygulanmamış) bitmap. */
-    private Bitmap scannedBitmap;
-    /** Şu an gösterilen (kontrast uygulanmış) bitmap — dispose ederken temizlenir. */
-    private Bitmap displayBitmap;
+    /** Ham (düzeltilmemiş) bitmap. */
+    private Bitmap rawBitmap;
+    /** Kullanıcının ayarladığı köşeler (bitmap koordinat uzayı). */
+    private PointF[] detectedCorners;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    /** Kontrast SeekBar: 0 → factor=0.5, 50 → factor=1.0, 150 → factor=2.0  (max=150). */
+    /** SeekBar: 0 → 0.5×, 50 → 1.0×, 150 → 2.0×. */
     private static final float FACTOR_MIN = 0.5f;
     private static final float FACTOR_MAX = 2.0f;
 
@@ -43,78 +52,80 @@ public class ScanPreviewActivity extends AppCompatActivity {
 
         Toolbar toolbar = findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
-        if (getSupportActionBar() != null) {
-            getSupportActionBar().setTitle("Tarama Önizleme");
-        }
+        if (getSupportActionBar() != null) getSupportActionBar().setTitle("Tarama Önizleme");
         toolbar.setNavigationIcon(R.drawable.ic_arrow_back);
         toolbar.setNavigationOnClickListener(v -> retake());
 
-        ivPreview   = findViewById(R.id.ivPreview);
-        progressBar = findViewById(R.id.progressBar);
+        ivPreview    = findViewById(R.id.ivPreview);
+        polygonView  = findViewById(R.id.polygonView);
+        progressBar  = findViewById(R.id.progressBar);
+        tvHint       = findViewById(R.id.tvHint);
         seekContrast = findViewById(R.id.seekContrast);
-        tvContrast  = findViewById(R.id.tvContrast);
-        btnRetake   = findViewById(R.id.btnRetake);
-        btnConfirm  = findViewById(R.id.btnConfirm);
+        tvContrast   = findViewById(R.id.tvContrast);
+        btnRetake    = findViewById(R.id.btnRetake);
+        btnConfirm   = findViewById(R.id.btnConfirm);
 
         btnRetake.setOnClickListener(v -> retake());
         btnConfirm.setOnClickListener(v -> confirm());
 
         setControlsEnabled(false);
+        tvContrast.setText("1.0×");
 
-        // DocumentScanner.consumePending() zaten perspektif düzeltilmiş bitmap verir.
-        scannedBitmap = DocumentScanner.consumePending();
-        if (scannedBitmap == null) {
+        // Ham bitmap + köşeleri al
+        rawBitmap       = DocumentScanner.consumePendingRaw();
+        detectedCorners = DocumentScanner.consumePendingCorners();
+
+        if (rawBitmap == null) {
             Toast.makeText(this, "Görüntü alınamadı, tekrar deneyin.", Toast.LENGTH_SHORT).show();
             retake();
             return;
         }
 
-        showBitmap(scannedBitmap);
-        setControlsEnabled(true);
+        // Ham görüntüyü göster
+        ivPreview.setImageBitmap(rawBitmap);
         progressBar.setVisibility(View.GONE);
+        setControlsEnabled(true);
+
+        // ImageView tamamen ölçeklendiğinde PolygonView'i kur
+        ivPreview.getViewTreeObserver().addOnGlobalLayoutListener(
+            new ViewTreeObserver.OnGlobalLayoutListener() {
+                @Override
+                public void onGlobalLayout() {
+                    ivPreview.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                    setupPolygonView();
+                }
+            });
 
         seekContrast.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                float factor = progressToFactor(progress);
-                tvContrast.setText(String.format(java.util.Locale.US, "%.1f×", factor));
-                applyContrastAsync(factor);
+            public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                tvContrast.setText(
+                    String.format(java.util.Locale.US, "%.1f×", progressToFactor(progress)));
             }
-            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
         });
+    }
 
-        // Başlangıç kontrast etiketi (progress=50 → factor=1.0)
-        tvContrast.setText("1.0×");
+    private void setupPolygonView() {
+        if (rawBitmap == null) return;
+        int vW = ivPreview.getWidth();
+        int vH = ivPreview.getHeight();
+        if (vW <= 0 || vH <= 0) return;
+
+        polygonView.setDisplayInfo(rawBitmap.getWidth(), rawBitmap.getHeight(), vW, vH);
+        polygonView.setCorners(detectedCorners);
     }
 
     private float progressToFactor(int progress) {
         return FACTOR_MIN + (FACTOR_MAX - FACTOR_MIN) * progress / (float) seekContrast.getMax();
     }
 
-    private void applyContrastAsync(float factor) {
-        if (scannedBitmap == null) return;
-        executor.execute(() -> {
-            Bitmap enhanced = DocumentScanner.enhanceContrast(scannedBitmap, factor);
-            runOnUiThread(() -> showBitmap(enhanced));
-        });
-    }
-
-    private void showBitmap(Bitmap bmp) {
-        if (bmp == null) return;
-        Bitmap prev = displayBitmap;
-        displayBitmap = bmp;
-        ivPreview.setImageBitmap(bmp);
-        // Eski display bitmap'i sadece scannedBitmap'ten farklıysa recycle et
-        if (prev != null && prev != scannedBitmap && prev != bmp) {
-            prev.recycle();
-        }
-    }
-
     private void setControlsEnabled(boolean enabled) {
         if (seekContrast != null) seekContrast.setEnabled(enabled);
-        if (btnRetake != null)    btnRetake.setEnabled(enabled);
-        if (btnConfirm != null)   btnConfirm.setEnabled(enabled);
+        if (btnRetake   != null) btnRetake.setEnabled(enabled);
+        if (btnConfirm  != null) btnConfirm.setEnabled(enabled);
+        if (polygonView != null) polygonView.setEnabled(enabled);
     }
 
     private void retake() {
@@ -123,18 +134,24 @@ public class ScanPreviewActivity extends AppCompatActivity {
     }
 
     private void confirm() {
-        if (scannedBitmap == null) { retake(); return; }
+        if (rawBitmap == null) { retake(); return; }
         setControlsEnabled(false);
+        if (tvHint != null) tvHint.setVisibility(View.GONE);
+        progressBar.setVisibility(View.VISIBLE);
+
+        // Kullanıcının son konumundaki köşeleri al
+        PointF[] corners = (polygonView != null) ? polygonView.getCorners() : detectedCorners;
         float factor = progressToFactor(seekContrast.getProgress());
 
         executor.execute(() -> {
-            Bitmap result;
-            if (Math.abs(factor - 1.0f) < 0.05f) {
-                // Kontrast değişmemiş — orijinali kullan
-                result = scannedBitmap;
-            } else {
-                result = DocumentScanner.enhanceContrast(scannedBitmap, factor);
-            }
+            // 1. Perspektif warp
+            Bitmap warped = DocumentScanner.applyPerspective(rawBitmap, corners);
+            // 2. Kontrast
+            Bitmap result = (Math.abs(factor - 1.0f) < 0.05f)
+                ? warped
+                : DocumentScanner.enhanceContrast(warped, factor);
+            if (result != warped && warped != rawBitmap) warped.recycle();
+
             DocumentScanner.setPending(result);
             runOnUiThread(() -> {
                 setResult(RESULT_OK);
@@ -147,12 +164,5 @@ public class ScanPreviewActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         executor.shutdown();
-        // displayBitmap scannedBitmap'ten farklıysa recycle
-        if (displayBitmap != null && displayBitmap != scannedBitmap) {
-            displayBitmap.recycle();
-        }
-        // scannedBitmap'i KagitOkuActivity'e bırakıyoruz (setPending ile transfer edildi);
-        // eğer confirm() çağrılmamışsa burada oluşmuş olabilir — ancak Activity sonlanınca
-        // GC zaten temizler, erken recycle crash riski yaratır.
     }
 }

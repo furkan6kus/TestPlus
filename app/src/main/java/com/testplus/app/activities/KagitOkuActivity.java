@@ -491,13 +491,8 @@ public class KagitOkuActivity extends AppCompatActivity {
             }
         }
 
-        // Perspektif düzelt
-        Bitmap scanned = (pdfW > 0 && pdfH > 0)
-            ? DocumentScanner.scan(bmp, pdfW, pdfH)
-            : bmp;
-        if (scanned != bmp) bmp.recycle();
-
-        DocumentScanner.setPending(scanned);
+        // Köşeleri tespit et ve ham bitmap ile birlikte depola (warp ScanPreviewActivity'de olacak)
+        DocumentScanner.detectAndStorePending(bmp, pdfW, pdfH);
 
         final Intent intent = new Intent(this, ScanPreviewActivity.class);
         runOnUiThread(() -> {

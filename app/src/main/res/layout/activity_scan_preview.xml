@@ -12,7 +12,9 @@
         android:background="?attr/colorPrimary"
         android:elevation="4dp" />
 
+    <!-- Ham görüntü + PolygonView üst üste -->
     <FrameLayout
+        android:id="@+id/framePreview"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
@@ -25,11 +27,33 @@
             android:adjustViewBounds="true"
             android:contentDescription="Tarama önizlemesi" />
 
+        <!-- OpenScan benzeri sürüklenebilir köşe noktaları -->
+        <com.testplus.app.views.PolygonView
+            android:id="@+id/polygonView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="visible" />
+
         <ProgressBar
             android:id="@+id/progressBar"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center"
+            android:visibility="visible" />
+
+        <!-- Köşe ayarlama ipucu -->
+        <TextView
+            android:id="@+id/tvHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="8dp"
+            android:background="#88000000"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="4dp"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:text="Köşe noktalarını sürükleyerek düzeltin"
             android:visibility="visible" />
 
     </FrameLayout>

@@ -1641,4 +1641,16 @@ public class OmrProcessor {
         float dx = b.x - a.x, dy = b.y - a.y;
         return (float) Math.sqrt(dx * dx + dy * dy);
     }
+
+    /**
+     * Ham bitmap'den 4 köşe marker'ını tespit eder (perspektif düzeltme yapmadan).
+     * Dönen PointF[4]: [TL, TR, BL, BR]; bulunamayan köşeler null olabilir.
+     */
+    public static PointF[] detectCornersFromBitmap(Bitmap bitmap, int pdfW, int pdfH) {
+        if (bitmap == null) return null;
+        int imgW = bitmap.getWidth(), imgH = bitmap.getHeight();
+        int[] pixels = new int[imgW * imgH];
+        bitmap.getPixels(pixels, 0, imgW, 0, 0, imgW, imgH);
+        return detectCornersPartial(pixels, imgW, imgH, pdfW, pdfH);
+    }
 }

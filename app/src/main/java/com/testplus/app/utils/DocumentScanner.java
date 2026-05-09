@@ -1,25 +1,120 @@
 package com.testplus.app.utils;
 
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Matrix;
+import android.graphics.PointF;
 
 /**
  * CamScanner benzeri belge tarama yardımcısı.
  * Perspektif düzeltme + kontrast ayarı + Activity arası bitmap transferi.
+ *
+ * Yeni akış (OpenScan benzeri):
+ *   1. detectAndStorePending() → köşeleri tespit et, ham bitmap + köşeleri depola
+ *   2. ScanPreviewActivity kullanıcıya köşeleri gösterir, sürükleyerek düzeltir
+ *   3. applyPerspective() → düzeltilmiş köşelerle warp + kontrast → OMR'a gönder
  */
 public final class DocumentScanner {
 
+    /** OMR'a gönderilecek nihai bitmap. */
     private static volatile Bitmap sPending;
+    /** Ham (düzeltilmemiş) bitmap — ScanPreviewActivity'de gösterilir. */
+    private static volatile Bitmap sPendingRaw;
+    /** Tespit edilen köşe noktaları bitmap koordinat uzayında [TL,TR,BL,BR]. */
+    private static volatile PointF[] sPendingCorners;
 
     private DocumentScanner() {}
 
+    // ─── Köşe tespiti + ham bitmap depolama ─────────────────────────────────
+
     /**
-     * Ham fotoğrafı perspektif düzeltilmiş bitmap'e çevirir.
+     * Köşeleri tespit eder; ham bitmap + köşeleri ScanPreviewActivity için depolar.
+     * Bulunamamış köşeler görüntü sınırına göre varsayılan konumla doldurulur.
      * Arka plan iş parçacığında çağrılmalıdır.
+     *
+     * @param raw   Yön düzeltilmiş, boyutu indirilmiş ham bitmap
+     * @param pdfW  Form PDF genişliği (pt)
+     * @param pdfH  Form PDF yüksekliği (pt)
      */
-    public static Bitmap scan(Bitmap raw, int pdfW, int pdfH) {
-        if (raw == null) return null;
-        return OmrProcessor.correctPerspective(raw, pdfW, pdfH);
+    public static void detectAndStorePending(Bitmap raw, int pdfW, int pdfH) {
+        PointF[] corners = null;
+        if (pdfW > 0 && pdfH > 0 && raw != null) {
+            corners = OmrProcessor.detectCornersFromBitmap(raw, pdfW, pdfH);
+        }
+        // Bulunamayan köşeleri görüntü kenarlarından 5% içe doğru varsayılan konumla doldur
+        corners = fillMissingCorners(corners, raw);
+        sPendingRaw = raw;
+        sPendingCorners = corners;
     }
+
+    /** null veya eksik köşeleri görüntü sınırına göre varsayılan konumla doldurur. */
+    private static PointF[] fillMissingCorners(PointF[] corners, Bitmap bmp) {
+        if (corners == null) corners = new PointF[4];
+        if (bmp == null) return corners;
+        int w = bmp.getWidth(), h = bmp.getHeight();
+        int insetX = w / 14, insetY = h / 14;
+        PointF[] defaults = {
+            new PointF(insetX,     insetY),      // TL
+            new PointF(w - insetX, insetY),      // TR
+            new PointF(insetX,     h - insetY),  // BL
+            new PointF(w - insetX, h - insetY)   // BR
+        };
+        for (int i = 0; i < 4; i++) {
+            if (corners[i] == null) corners[i] = defaults[i];
+        }
+        return corners;
+    }
+
+    public static Bitmap consumePendingRaw() {
+        Bitmap b = sPendingRaw;
+        sPendingRaw = null;
+        return b;
+    }
+
+    public static PointF[] consumePendingCorners() {
+        PointF[] c = sPendingCorners;
+        sPendingCorners = null;
+        return c;
+    }
+
+    // ─── Perspektif warp + kontrast ──────────────────────────────────────────
+
+    /**
+     * Ham bitmap'i kullanıcının (muhtemelen düzelttiği) köşe noktalarıyla warp eder.
+     * @param raw     Ham bitmap (ScanPreviewActivity'den consumePendingRaw)
+     * @param corners Köşe noktaları [TL,TR,BL,BR] bitmap koordinat uzayında
+     * @return Perspektif düzeltilmiş bitmap
+     */
+    public static Bitmap applyPerspective(Bitmap raw, PointF[] corners) {
+        if (raw == null || corners == null || corners.length < 4) return raw;
+        PointF tl = corners[0], tr = corners[1], bl = corners[2], br = corners[3];
+        if (tl == null || tr == null || bl == null || br == null) return raw;
+
+        float topW = dist(tl, tr), botW = dist(bl, br);
+        float leftH = dist(tl, bl), rightH = dist(tr, br);
+        int outW = Math.max(80, Math.round(Math.max(topW, botW)));
+        int outH = Math.max(80, Math.round(Math.max(leftH, rightH)));
+
+        float[] src = {tl.x, tl.y, tr.x, tr.y, bl.x, bl.y, br.x, br.y};
+        float[] dst = {0, 0, outW, 0, 0, outH, outW, outH};
+        Matrix m = new Matrix();
+        if (!m.setPolyToPoly(src, 0, dst, 0, 4)) return raw;
+
+        try {
+            Bitmap out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
+            new Canvas(out).drawBitmap(raw, m, null);
+            return out;
+        } catch (Exception e) {
+            return raw;
+        }
+    }
+
+    private static float dist(PointF a, PointF b) {
+        float dx = b.x - a.x, dy = b.y - a.y;
+        return (float) Math.sqrt(dx * dx + dy * dy);
+    }
+
+    // ─── Kontrast ────────────────────────────────────────────────────────────
 
     /**
      * LUT tabanlı kontrast ayarı.
@@ -27,8 +122,7 @@ public final class DocumentScanner {
      */
     public static Bitmap enhanceContrast(Bitmap src, float factor) {
         if (src == null) return null;
-        int w = src.getWidth();
-        int h = src.getHeight();
+        int w = src.getWidth(), h = src.getHeight();
 
         int[] lut = new int[256];
         for (int i = 0; i < 256; i++) {
@@ -52,12 +146,12 @@ public final class DocumentScanner {
         return out;
     }
 
-    /** Activity arası bitmap transferi: bekleyen bitmap'i depola. */
-    public static void setPending(Bitmap bmp) {
-        sPending = bmp;
-    }
+    // ─── Activity arası nihai bitmap transferi ───────────────────────────────
 
-    /** Depolanan bitmap'i al ve temizle. */
+    /** OMR işlemi için bitmap depola. */
+    public static void setPending(Bitmap bmp) { sPending = bmp; }
+
+    /** Depolanan OMR bitmap'ini al ve temizle. */
     public static Bitmap consumePending() {
         Bitmap b = sPending;
         sPending = null;
