@@ -3207,6 +3207,7 @@ int id cache_measures 0x7f080069
 int id callMeasure 0x7f08006a
 int id cameraContainer 0x7f08022f
 int id cancel_button 0x7f08006b
+int id canvasViewport 0x7f080234
 int id carryVelocity 0x7f08006c
 int id center 0x7f08006d
 int id centerCrop 0x7f08006e
@@ -3350,6 +3351,7 @@ int id inward 0x7f0800f7
 int id is_pooling_container_tag 0x7f0800f8
 int id italic 0x7f0800f9
 int id item_touch_helper_previous_elevation 0x7f0800fa
+int id ivRectifiedPreview 0x7f080235
 int id jumpToEnd 0x7f0800fb
 int id jumpToStart 0x7f0800fc
 int id kanvasLayout 0x7f0800fd
@@ -3568,7 +3570,6 @@ int id stretch 0x7f0801d0
 int id submenuarrow 0x7f0801d1
 int id submit_area 0x7f0801d2
 int id supportScrollUp 0x7f0801d3
-int id switchBlokBosluk 0x7f0801d4
 int id tabLayout 0x7f0801d5
 int id tabMode 0x7f0801d6
 int id tag_accessibility_actions 0x7f0801d7
@@ -3629,6 +3630,7 @@ int id tvNet 0x7f08020c
 int id tvNumara 0x7f08020d
 int id tvPdf 0x7f08020e
 int id tvPybs 0x7f08020f
+int id tvScanSummary 0x7f080236
 int id tvSinif 0x7f080210
 int id tvTamam 0x7f080211
 int id tvTarih 0x7f080212

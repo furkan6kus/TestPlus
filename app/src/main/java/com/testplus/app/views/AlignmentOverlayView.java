@@ -106,7 +106,7 @@ public class AlignmentOverlayView extends View {
             return;
         }
         if (found == 4 && !guideCornersAligned) {
-            statusText = "Siyah kareleri çerçeve köşelerine oturtun";
+            statusText = "Telefonu yaklaştırın — kağıt yeşil çerçeveyi doldursun";
             return;
         }
         if (found == 4) {

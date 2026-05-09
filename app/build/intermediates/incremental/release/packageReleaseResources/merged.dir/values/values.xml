@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="background">#F0F2FF</color>
+    <color name="divider">#EEEEEE</color>
+    <color name="error">#E53935</color>
+    <color name="green">#4CAF50</color>
+    <color name="on_background">#212121</color>
+    <color name="on_primary">#FFFFFF</color>
+    <color name="on_surface">#212121</color>
+    <color name="primary">#1565C0</color>
+    <color name="primary_dark">#0D47A1</color>
+    <color name="primary_variant">#1976D2</color>
+    <color name="red">#E53935</color>
+    <color name="secondary">#4CAF50</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="text_secondary">#757575</color>
+    <string name="app_name">TestPlus</string>
+    <string name="duzenle">Düzenle</string>
+    <string name="iptal">İptal</string>
+    <string name="kaydet">Kaydet</string>
+    <string name="on_izleme">Ön İzleme</string>
+    <string name="optikler">Optikler</string>
+    <string name="sil">Sil</string>
+    <string name="sinavlar">Sınavlar</string>
+    <string name="tamam">Tamam</string>
+    <string name="yeni_optik_form">Yeni Optik Form</string>
+    <string name="yeni_sinav">Yeni Sınav</string>
+    <string name="zorunlu_alanlar">* Zorunlu Alanlar</string>
+    <style name="AppActionBar" parent="Widget.AppCompat.ActionBar.Solid">
+        <item name="background">@color/primary</item>
+        <item name="titleTextStyle">@style/AppActionBarTitle</item>
+    </style>
+    <style name="AppActionBarTitle" parent="TextAppearance.AppCompat.Widget.ActionBar.Title">
+        <item name="android:textColor">@color/on_primary</item>
+    </style>
+    <style name="Theme.TestPlus" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorPrimaryVariant">@color/primary_dark</item>
+        <item name="colorOnPrimary">@color/on_primary</item>
+        <item name="colorSecondary">@color/secondary</item>
+        <item name="android:colorBackground">@color/background</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorError">@color/error</item>
+        <item name="actionBarStyle">@style/AppActionBar</item>
+    </style>
+    <style name="Theme.TestPlus.NoActionBar">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+    </style>
+</resources>

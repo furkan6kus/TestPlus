@@ -67,6 +67,10 @@ public class KagitOkuActivity extends AppCompatActivity {
     private LinearLayout bottomBar;
     private AlignmentOverlayView alignmentOverlay;
     private OptikForm cachedForm;
+    private ImageView ivRectifiedPreview;
+    private TextView tvScanSummary;
+    /** {@link OmrProcessor.ProcessResult#rectifiedBitmap} ile aynı referans; {@link #onDestroy} içinde serbest bırakılır. */
+    private Bitmap lastRectifiedPreview;
     /** Analiz aralığı (~5 fps): her stabil kare bu süre ile sayılır. */
     private static final long MIN_ANALYZE_INTERVAL_NS = 200_000_000L; // 200 ms
     /**
@@ -85,6 +89,13 @@ public class KagitOkuActivity extends AppCompatActivity {
     /** Gölge nedeniyle geri sayım engellendi uyarısını spam etmemek için. */
     private long lastShadowToastNs = 0L;
     private static final long SHADOW_TOAST_INTERVAL_NS = 2_800_000_000L; // ~2.8 sn
+
+    // ─── Köşe koordinatı yumuşatma (EMA) ─────────────────────────────────────
+    /** Her frame'in katkı oranı: 0.35 → ~3 frame'lik zaman sabiti. */
+    private static final float CORNER_EMA_ALPHA = 0.35f;
+    /** Bu kadar px'den büyük anlık sıçramada EMA sıfırlanır (gerçek kamera hareketi). */
+    private static final float CORNER_RESET_DIST_PX = 90f;
+    private final PointF[] smoothedScreenCorners = new PointF[4];
 
     // ─── Eğim sensörü (telefonu kağıda paralel tutmak için) ──────────────────
     private SensorManager sensorManager;
@@ -131,6 +142,8 @@ public class KagitOkuActivity extends AppCompatActivity {
         etNumara = findViewById(R.id.etNumara);
         etSinif = findViewById(R.id.etSinif);
         cevaplarContainer = findViewById(R.id.cevaplarContainer);
+        ivRectifiedPreview = findViewById(R.id.ivRectifiedPreview);
+        tvScanSummary = findViewById(R.id.tvScanSummary);
         btnCek = findViewById(R.id.btnCek);
         bottomBar = findViewById(R.id.bottomBar);
 
@@ -299,7 +312,7 @@ public class KagitOkuActivity extends AppCompatActivity {
             } else if (!alignmentOverlay.allOk()) {
                 msg = "4 siyah köşe karesi net görünmüyor. Işığı ve kadrajı düzeltip tekrar deneyin.";
             } else if (!alignmentOverlay.areGuideCornersAligned()) {
-                msg = "Siyah kareleri yeşil çerçeve köşelerine oturtun; çerçeve tam yeşilken çekin.";
+                msg = "Kağıdı biraz daha yakın tutun — yeşil çerçeve doluncaya kadar yaklaşın, sonra bekleyin.";
             } else {
                 msg = "Çerçeve yeşil olmadan çekilemez. Hizalama ve ışığı kontrol edin.";
             }
@@ -565,6 +578,34 @@ public class KagitOkuActivity extends AppCompatActivity {
                     List<String> liste = detected.get(alan.id);
                     if (liste != null) ogrenciCevaplar.put(alan.id, liste);
                 }
+                if (omrOutcome.rectifiedBitmap != null) {
+                    Bitmap eski = lastRectifiedPreview;
+                    lastRectifiedPreview = omrOutcome.rectifiedBitmap;
+                    if (ivRectifiedPreview != null) {
+                        ivRectifiedPreview.setImageBitmap(omrOutcome.rectifiedBitmap);
+                        ivRectifiedPreview.setVisibility(View.VISIBLE);
+                    }
+                    if (eski != null && eski != omrOutcome.rectifiedBitmap && !eski.isRecycled()) {
+                        eski.recycle();
+                    }
+                } else {
+                    if (ivRectifiedPreview != null) {
+                        ivRectifiedPreview.setImageDrawable(null);
+                        ivRectifiedPreview.setVisibility(View.GONE);
+                    }
+                    if (lastRectifiedPreview != null && !lastRectifiedPreview.isRecycled()) {
+                        lastRectifiedPreview.recycle();
+                        lastRectifiedPreview = null;
+                    }
+                }
+                if (tvScanSummary != null) {
+                    if (omrOutcome.rectifiedBitmap != null) {
+                        tvScanSummary.setVisibility(View.GONE);
+                    } else {
+                        tvScanSummary.setText(buildScanSummary(omrOutcome, finalMarked));
+                        tvScanSummary.setVisibility(View.VISIBLE);
+                    }
+                }
                 switchToManual();
                 buildCevaplarUI();
 
@@ -603,6 +644,20 @@ public class KagitOkuActivity extends AppCompatActivity {
                     "Otomatik okuma başarısız. Manuel giriş yapın.", Toast.LENGTH_LONG).show();
             });
         }
+    }
+
+    private String buildScanSummary(OmrProcessor.ProcessResult r, int totalMarked) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Köşe işaretleri: ").append(r.cornersDetected).append("/4");
+        if (r.usedRectifiedPipeline) {
+            sb.append(" • Perspektif düzeltildi (düz görüntüde okuma)");
+        } else if (r.cornersDetected == 4) {
+            sb.append(" • Düz görüntü kullanılmadı (orijinal görüntü + homografi/lineer)");
+        }
+        sb.append("\nToplam algılanan işaret: ").append(totalMarked);
+        sb.append(" • Işık yayılımı: ")
+            .append(String.format(Locale.US, "%.3f", r.illuminationSpread));
+        return sb.toString();
     }
 
     /** Logcat özet satırı: alan-id → "kaç/toplam işaretli" */
@@ -752,17 +807,22 @@ public class KagitOkuActivity extends AppCompatActivity {
             PointF[] corners = OmrProcessor.detectCornersFromLumaPartial(
                 luma, rowStride, w, h, pdfW, pdfH, lumaScratchBuffer);
 
-            boolean shadowBlocksCountdown =
+            boolean shadowBlocksCountdownRaw =
                 OmrProcessor.isPreviewBlockedByShadow(lumaScratchBuffer, w, h);
 
-            // Algılanan köşe sayısını overlay konumlarına maple (image yönü → ekran yönü)
             int rotDeg = proxy.getImageInfo().getRotationDegrees();
+            // Ham köşe var/yok bilgisi (OMR motorunun gerçek çıktısı).
             boolean[] ok = mapCornersToScreenQuadrants(corners, rotDeg);
-
             // Tespit edilen image-space köşeleri ekran piksel koordinatlarına çevir
-            final PointF[] screenCorners = mapCornersToScreenSpace(corners, rotDeg, w, h);
-
+            PointF[] rawScreenCorners = mapCornersToScreenSpace(corners, rotDeg, w, h);
+            // Rehber köşelerden aşırı uzak noktaları hemen at: overlay'de saçma nokta görünmesin.
+            rawScreenCorners = filterScreenCornersAgainstGuide(rawScreenCorners);
+            // EMA ile yumuşat: kamera otopozlamasından kaynaklı titremeler kaybolur.
+            final PointF[] screenCorners = applyCornerEma(rawScreenCorners);
             boolean allOk = ok[0] && ok[1] && ok[2] && ok[3];
+            // Gölge uyarısını sadece köşe tespiti güvenilirken dikkate al:
+            // aksi halde köşe bulunamama anlarında yanlış "gölge" bloklaması oluşabiliyor.
+            boolean shadowBlocksCountdown = shadowBlocksCountdownRaw && allOk;
             // Eğim eşik dışındayken homografi sapacak, OMR yanlış okuyacak.
             // 4 köşe bulunsa bile eğim düzelmeden geri sayımı başlatmıyoruz.
             boolean tiltLevel = alignmentOverlay == null || alignmentOverlay.tiltOk();
@@ -825,11 +885,15 @@ public class KagitOkuActivity extends AppCompatActivity {
 
             final boolean cornersAlignedFinal = cornersAligned;
             final boolean shadowBlockedFinal = shadowBlocksCountdown;
+            final boolean[] okDisplay = new boolean[]{
+                screenCorners[0] != null, screenCorners[1] != null,
+                screenCorners[2] != null, screenCorners[3] != null
+            };
             runOnUiThread(() -> {
                 if (alignmentOverlay != null) {
                     alignmentOverlay.setPreviewShadowBlocked(shadowBlockedFinal);
                     alignmentOverlay.setGuideCornersAligned(cornersAlignedFinal);
-                    alignmentOverlay.setDetectedCorners(ok[0], ok[1], ok[2], ok[3]);
+                    alignmentOverlay.setDetectedCorners(okDisplay[0], okDisplay[1], okDisplay[2], okDisplay[3]);
                     alignmentOverlay.setDetectedScreenPositions(
                         screenCorners[0], screenCorners[1],
                         screenCorners[2], screenCorners[3]);
@@ -967,82 +1031,126 @@ public class KagitOkuActivity extends AppCompatActivity {
     /** Hizalama neden sağlanmadı? Kullanıcı yönlendirmesi için kısa metin döner. */
     private String describeAlignmentMiss(PointF[] screenCorners) {
         RectF frame = computeOverlayGuideFrame();
-        if (frame == null || screenCorners == null) return "kareler çerçeveye oturmamış";
+        if (frame == null || screenCorners == null) return "kareler tespit edilemedi";
+        // Size-based gate: compute how much of the guide frame the form fills
+        boolean anyNull = false;
+        for (PointF p : screenCorners) if (p == null) { anyNull = true; break; }
+        if (anyNull) return "köşe(ler) bulunamadı";
+        float capturedW = Math.min(screenCorners[1].x, screenCorners[3].x)
+            - Math.max(screenCorners[0].x, screenCorners[2].x);
+        float capturedH = Math.min(screenCorners[2].y, screenCorners[3].y)
+            - Math.max(screenCorners[0].y, screenCorners[1].y);
+        int pct = (int) (100f * capturedW / frame.width());
+        return String.format(java.util.Locale.US,
+            "kağıt çok küçük (çerçevenin %%%d'i) — telefonu yaklaştırın", pct);
+    }
+
+    /**
+     * Ekran köşe koordinatlarına EMA (üstel hareketli ortalama) uygular.
+     * Küçük titremeler bastırılır; büyük anlık sıçramalarda (telefon gerçekten hareket etti)
+     * EMA sıfırlanarak yeni konuma hızla yaklaşır.
+     */
+    private PointF[] applyCornerEma(PointF[] raw) {
+        PointF[] result = new PointF[4];
+        for (int i = 0; i < 4; i++) {
+            if (raw[i] == null) {
+                smoothedScreenCorners[i] = null;
+                result[i] = null;
+            } else if (smoothedScreenCorners[i] == null) {
+                smoothedScreenCorners[i] = new PointF(raw[i].x, raw[i].y);
+                result[i] = new PointF(raw[i].x, raw[i].y);
+            } else {
+                float dx = raw[i].x - smoothedScreenCorners[i].x;
+                float dy = raw[i].y - smoothedScreenCorners[i].y;
+                float dist = (float) Math.sqrt(dx * dx + dy * dy);
+                if (dist > CORNER_RESET_DIST_PX) {
+                    // Gerçek kamera sıçraması — EMA'yı sıfırla
+                    smoothedScreenCorners[i].set(raw[i].x, raw[i].y);
+                } else {
+                    smoothedScreenCorners[i].x =
+                        CORNER_EMA_ALPHA * raw[i].x + (1f - CORNER_EMA_ALPHA) * smoothedScreenCorners[i].x;
+                    smoothedScreenCorners[i].y =
+                        CORNER_EMA_ALPHA * raw[i].y + (1f - CORNER_EMA_ALPHA) * smoothedScreenCorners[i].y;
+                }
+                result[i] = new PointF(smoothedScreenCorners[i].x, smoothedScreenCorners[i].y);
+            }
+        }
+        return result;
+    }
+
+    /** Rehber köşelerden çok uzak marker noktalarını eler (yanlış pozitifleri bastırır). */
+    private PointF[] filterScreenCornersAgainstGuide(PointF[] corners) {
+        PointF[] out = new PointF[4];
+        if (corners == null) return out;
+        RectF frame = computeOverlayGuideFrame();
+        if (frame == null || frame.width() <= 1f || frame.height() <= 1f) return corners;
+
         float pdfW = (cachedForm != null) ? PdfGenerator.getPdfWidth(cachedForm) : 595f;
         float pdfH = (cachedForm != null) ? PdfGenerator.getPdfHeight(cachedForm) : 842f;
-        float markerCenterPt = PdfGenerator.MARKER_PADDING_PT + PdfGenerator.MARKER_PT / 2f;
-        float insetX = frame.width()  * (markerCenterPt / pdfW);
+        float markerCenterPt = PdfGenerator.getMarkerCenterOffsetPt((int) pdfW, (int) pdfH);
+        float insetX = frame.width() * (markerCenterPt / pdfW);
         float insetY = frame.height() * (markerCenterPt / pdfH);
         float[] tx = {frame.left + insetX, frame.right - insetX, frame.left + insetX, frame.right - insetX};
-        float[] ty = {frame.top + insetY,  frame.top + insetY,   frame.bottom - insetY, frame.bottom - insetY};
-        StringBuilder sb = new StringBuilder("kareler hizasız [");
+        float[] ty = {frame.top + insetY, frame.top + insetY, frame.bottom - insetY, frame.bottom - insetY};
+
+        float density = getResources().getDisplayMetrics().density;
+        float tol = Math.max(20f * density, Math.min(frame.width(), frame.height()) * 0.10f);
+        float tol2 = tol * tol;
+
         for (int i = 0; i < 4; i++) {
-            PointF p = screenCorners[i];
-            if (p == null) { sb.append("?"); }
-            else {
-                float dx = p.x - tx[i];
-                float dy = p.y - ty[i];
-                float d = (float) Math.sqrt(dx * dx + dy * dy);
-                sb.append(String.format(java.util.Locale.US, "%.0f", d));
-            }
-            if (i < 3) sb.append(",");
+            PointF p = corners[i];
+            if (p == null) continue;
+            float dx = p.x - tx[i];
+            float dy = p.y - ty[i];
+            if (dx * dx + dy * dy <= tol2) out[i] = p;
         }
-        sb.append("px]");
-        return sb.toString();
+        return out;
     }
 
     private boolean markersNearGuideCorners(PointF[] screenCorners) {
         RectF frame = computeOverlayGuideFrame();
         if (frame == null || frame.width() <= 1 || screenCorners == null) return false;
-        float density = getResources().getDisplayMetrics().density;
 
-        // ─── Marker'ın kağıt kenarından MERKEZ İNSET'i (PDF üzerinden hesap) ───
-        // Marker üst/sol kenardan MARKER_PADDING_PT, kendisi MARKER_PT geniş; merkezi
-        // pad + size/2 = 19pt. Çerçeve A4 (210/297) tutar; PDF orijinal de A4 (595x842pt).
-        // Bu yüzden inset oranı: 19 / pdfWidth (yatay), 19 / pdfHeight (dikey).
-        float pdfW = (cachedForm != null)
-            ? PdfGenerator.getPdfWidth(cachedForm) : 595f;
-        float pdfH = (cachedForm != null)
-            ? PdfGenerator.getPdfHeight(cachedForm) : 842f;
-        float markerCenterPt = PdfGenerator.MARKER_PADDING_PT + PdfGenerator.MARKER_PT / 2f;
-        float insetX = frame.width()  * (markerCenterPt / pdfW);
+        // Null-check first: any missing corner = not ready
+        for (PointF p : screenCorners) {
+            if (p == null) return false;
+        }
+
+        // ── Size gate: the detected quad must span ≥40% of the guide frame in both
+        // dimensions. This ensures ptToPx is large enough for reliable bubble sampling
+        // (~0.8 px/pt minimum) while still being achievable at a natural holding distance
+        // (~25-35 cm) without requiring the phone to be uncomfortably close.
+        //
+        // Per-corner proximity yeniden aktif: yanlış yerdeki marker noktalarını engeller.
+        float pdfW = (cachedForm != null) ? PdfGenerator.getPdfWidth(cachedForm) : 595f;
+        float pdfH = (cachedForm != null) ? PdfGenerator.getPdfHeight(cachedForm) : 842f;
+        float markerCenterPt = PdfGenerator.getMarkerCenterOffsetPt((int) pdfW, (int) pdfH);
+        float insetX = frame.width() * (markerCenterPt / pdfW);
         float insetY = frame.height() * (markerCenterPt / pdfH);
-
-        // Kağıt çerçeveye iyi oturduğunda marker'ın olması gereken ekran konumu.
-        float[] tx = {
-            frame.left  + insetX, frame.right - insetX,
-            frame.left  + insetX, frame.right - insetX
-        };
-        float[] ty = {
-            frame.top    + insetY, frame.top    + insetY,
-            frame.bottom - insetY, frame.bottom - insetY
-        };
-
-        // Tolerans: çerçevenin %8'i + min 32dp — hafif kadraj kaymasında da çekim izni
-        // (kullanıcı siyah kareleri kabaca köşeye getirdiğinde takılı kalmayı azaltır).
-        float tol = Math.max(32f * density,
-            Math.min(frame.width(), frame.height()) * 0.08f);
+        float[] tx = {frame.left + insetX, frame.right - insetX, frame.left + insetX, frame.right - insetX};
+        float[] ty = {frame.top + insetY, frame.top + insetY, frame.bottom - insetY, frame.bottom - insetY};
+        float density = getResources().getDisplayMetrics().density;
+        float tol = Math.max(20f * density, Math.min(frame.width(), frame.height()) * 0.10f);
         float tol2 = tol * tol;
         for (int i = 0; i < 4; i++) {
-            PointF p = screenCorners[i];
-            if (p == null) return false;
-            float dx = p.x - tx[i];
-            float dy = p.y - ty[i];
+            float dx = screenCorners[i].x - tx[i];
+            float dy = screenCorners[i].y - ty[i];
             if (dx * dx + dy * dy > tol2) return false;
         }
-        // Ek koruma: kağıt çerçeveden çok küçük çekilmişse ptToPx düşer, OMR güvenilmez olur.
-        // İşaretler çerçeveye iyi oturduysa zaten genişlik ≈ frame.width() - 2*insetX olmalı.
-        // Küçük çekim / uzak kadraj: biraz daha toleranslı (%72) — aksi halde 4 köşe
-        // yeşil olsa bile "çerçeveye oturt" aşamasında sık sık red.
-        float expectedW = frame.width()  - 2f * insetX;
-        float expectedH = frame.height() - 2f * insetY;
+
         float capturedW = Math.min(screenCorners[1].x, screenCorners[3].x)
             - Math.max(screenCorners[0].x, screenCorners[2].x);
         float capturedH = Math.min(screenCorners[2].y, screenCorners[3].y)
             - Math.max(screenCorners[0].y, screenCorners[1].y);
-        if (capturedW < expectedW * 0.72f || capturedH < expectedH * 0.72f) {
-            return false;
-        }
+        if (capturedW < frame.width()  * 0.40f) return false;
+        if (capturedH < frame.height() * 0.40f) return false;
+
+        // ── Shape sanity: top edge must be above bottom, left of right ──────────
+        if (screenCorners[0].x >= screenCorners[1].x) return false; // TL.x < TR.x
+        if (screenCorners[2].x >= screenCorners[3].x) return false; // BL.x < BR.x
+        if (screenCorners[0].y >= screenCorners[2].y) return false; // TL.y < BL.y
+        if (screenCorners[1].y >= screenCorners[3].y) return false; // TR.y < BR.y
+
         return true;
     }
 
@@ -1139,6 +1247,13 @@ public class KagitOkuActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (ivRectifiedPreview != null) {
+            ivRectifiedPreview.setImageDrawable(null);
+        }
+        if (lastRectifiedPreview != null && !lastRectifiedPreview.isRecycled()) {
+            lastRectifiedPreview.recycle();
+            lastRectifiedPreview = null;
+        }
         executor.shutdown();
         cameraAnalysisExecutor.shutdown();
     }

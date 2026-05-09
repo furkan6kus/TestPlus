@@ -56,6 +56,26 @@
             android:orientation="vertical"
             android:padding="16dp">
 
+            <ImageView
+                android:id="@+id/ivRectifiedPreview"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:maxHeight="420dp"
+                android:minHeight="120dp"
+                android:adjustViewBounds="true"
+                android:scaleType="fitCenter"
+                android:visibility="gone"
+                android:background="@color/surface"
+                android:contentDescription="Taranan optik form" />
+
+            <TextView
+                android:id="@+id/tvScanSummary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="13sp"
+                android:visibility="gone"
+                android:paddingBottom="8dp" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

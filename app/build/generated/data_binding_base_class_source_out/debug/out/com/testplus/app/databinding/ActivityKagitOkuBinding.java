@@ -6,6 +6,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -57,6 +58,9 @@ public final class ActivityKagitOkuBinding implements ViewBinding {
   public final TextInputEditText etSinif;
 
   @NonNull
+  public final ImageView ivRectifiedPreview;
+
+  @NonNull
   public final ScrollView manualEntryLayout;
 
   @NonNull
@@ -68,13 +72,17 @@ public final class ActivityKagitOkuBinding implements ViewBinding {
   @NonNull
   public final TextView tvGaleri;
 
+  @NonNull
+  public final TextView tvScanSummary;
+
   private ActivityKagitOkuBinding(@NonNull LinearLayout rootView,
       @NonNull AlignmentOverlayView alignmentOverlay, @NonNull LinearLayout bottomBar,
       @NonNull Button btnCek, @NonNull Button btnKaydet, @NonNull Button btnManuelGiris,
       @NonNull FrameLayout cameraContainer, @NonNull LinearLayout cevaplarContainer,
       @NonNull TextInputEditText etAd, @NonNull TextInputEditText etNumara,
-      @NonNull TextInputEditText etSinif, @NonNull ScrollView manualEntryLayout,
-      @NonNull PreviewView previewView, @NonNull Toolbar toolbar, @NonNull TextView tvGaleri) {
+      @NonNull TextInputEditText etSinif, @NonNull ImageView ivRectifiedPreview,
+      @NonNull ScrollView manualEntryLayout, @NonNull PreviewView previewView,
+      @NonNull Toolbar toolbar, @NonNull TextView tvGaleri, @NonNull TextView tvScanSummary) {
     this.rootView = rootView;
     this.alignmentOverlay = alignmentOverlay;
     this.bottomBar = bottomBar;
@@ -86,10 +94,12 @@ public final class ActivityKagitOkuBinding implements ViewBinding {
     this.etAd = etAd;
     this.etNumara = etNumara;
     this.etSinif = etSinif;
+    this.ivRectifiedPreview = ivRectifiedPreview;
     this.manualEntryLayout = manualEntryLayout;
     this.previewView = previewView;
     this.toolbar = toolbar;
     this.tvGaleri = tvGaleri;
+    this.tvScanSummary = tvScanSummary;
   }
 
   @Override
@@ -179,6 +189,12 @@ public final class ActivityKagitOkuBinding implements ViewBinding {
         break missingId;
       }
 
+      id = R.id.ivRectifiedPreview;
+      ImageView ivRectifiedPreview = ViewBindings.findChildViewById(rootView, id);
+      if (ivRectifiedPreview == null) {
+        break missingId;
+      }
+
       id = R.id.manualEntryLayout;
       ScrollView manualEntryLayout = ViewBindings.findChildViewById(rootView, id);
       if (manualEntryLayout == null) {
@@ -203,9 +219,16 @@ public final class ActivityKagitOkuBinding implements ViewBinding {
         break missingId;
       }
 
+      id = R.id.tvScanSummary;
+      TextView tvScanSummary = ViewBindings.findChildViewById(rootView, id);
+      if (tvScanSummary == null) {
+        break missingId;
+      }
+
       return new ActivityKagitOkuBinding((LinearLayout) rootView, alignmentOverlay, bottomBar,
           btnCek, btnKaydet, btnManuelGiris, cameraContainer, cevaplarContainer, etAd, etNumara,
-          etSinif, manualEntryLayout, previewView, toolbar, tvGaleri);
+          etSinif, ivRectifiedPreview, manualEntryLayout, previewView, toolbar, tvGaleri,
+          tvScanSummary);
     }
     String missingId = rootView.getResources().getResourceName(id);
     throw new NullPointerException("Missing required view with ID: ".concat(missingId));

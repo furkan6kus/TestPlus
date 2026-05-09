@@ -47,22 +47,28 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
-        <ScrollView
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Yalnızca beyaz sayfa alanı PDF'ye dahil edilir."
+            android:textSize="12sp"
+            android:textColor="@color/on_background"
+            android:paddingStart="12dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="12dp" />
+
+        <FrameLayout
+            android:id="@+id/canvasViewport"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:fillViewport="false"
-            android:scrollbars="vertical">
-            <HorizontalScrollView
+            android:layout_marginTop="28dp"
+            android:padding="8dp">
+            <FrameLayout
+                android:id="@+id/kanvasLayout"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:fillViewport="false"
-                android:scrollbars="horizontal">
-                <FrameLayout
-                    android:id="@+id/kanvasLayout"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" />
-            </HorizontalScrollView>
-        </ScrollView>
+                android:layout_gravity="center" />
+        </FrameLayout>
 
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:id="@+id/fabEkle"

@@ -1,0 +1,186 @@
+[
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_ic_close.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/ic_close.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_fragment_kagitlar.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/fragment_kagitlar.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_circle_red_stroke.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/circle_red_stroke.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_activity_cevap_anahtari.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/activity_cevap_anahtari.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_item_anahtar.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/item_anahtar.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/menu_bottom_nav_menu.xml.flat",
+        "source": "com.testplus.app-main-42:/menu/bottom_nav_menu.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-anydpi-v26_ic_launcher_round.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-anydpi-v26/ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-xxhdpi_ic_launcher.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-xxhdpi/ic_launcher.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/xml_file_paths.xml.flat",
+        "source": "com.testplus.app-main-42:/xml/file_paths.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_circle_gray.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/circle_gray.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_activity_kagit_oku.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/activity_kagit_oku.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_ic_arrow_back.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/ic_arrow_back.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_btn_cevap_secili.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/btn_cevap_secili.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_bg_circle_primary.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/bg_circle_primary.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-mdpi_ic_launcher_round.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-mdpi/ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_item_sinav.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/item_sinav.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-xhdpi_ic_launcher_round.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-xhdpi/ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_item_optik_form.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/item_optik_form.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_fragment_sinavlar.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/fragment_sinavlar.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_ic_launcher_background.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/ic_launcher_background.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_circle_green.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/circle_green.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/ic_launcher_foreground.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-xxhdpi_ic_launcher_round.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-xxhdpi/ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_rounded_input.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/rounded_input.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-xhdpi_ic_launcher.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-xhdpi/ic_launcher.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-hdpi_ic_launcher_round.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-hdpi/ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_activity_sinav_detay.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/activity_sinav_detay.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_fragment_anahtarlar.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/fragment_anahtarlar.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_ic_add.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/ic_add.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_activity_optik_form_kanvas.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/activity_optik_form_kanvas.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_rounded_card.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/rounded_card.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-xxxhdpi_ic_launcher_round.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-xxxhdpi/ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_activity_yeni_optik_form_alan.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/activity_yeni_optik_form_alan.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_activity_ogrenci_detay.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/activity_ogrenci_detay.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_item_ogrenci.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/item_ogrenci.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-mdpi_ic_launcher.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-mdpi/ic_launcher.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-xxxhdpi_ic_launcher.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-xxxhdpi/ic_launcher.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/mipmap-hdpi_ic_launcher.xml.flat",
+        "source": "com.testplus.app-main-42:/mipmap-hdpi/ic_launcher.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/menu_menu_ogrenci_detay.xml.flat",
+        "source": "com.testplus.app-main-42:/menu/menu_ogrenci_detay.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_activity_yeni_optik_form.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/activity_yeni_optik_form.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_activity_main.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/activity_main.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_activity_yeni_sinav.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/activity_yeni_sinav.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/drawable_btn_cevap.xml.flat",
+        "source": "com.testplus.app-main-42:/drawable/btn_cevap.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_fragment_optikler.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/fragment_optikler.xml"
+    },
+    {
+        "merged": "com.testplus.app-merged_res-41:/layout_sheet_optik_alan_ekle.xml.flat",
+        "source": "com.testplus.app-main-42:/layout/sheet_optik_alan_ekle.xml"
+    }
+]
