@@ -2,7 +2,7 @@ import java.util.ArrayList;
 
 public class FaturaliHat extends Hat {
 
-    // aylik sabit fatura ve ucretsiz konusma suresi (saniye)
+    // aylik sabit fatura tutari ve ucretsiz konusma suresi (saniye cinsinden)
     private int bedavaSure;
     private int faturaTutari;
     private double ekUcret; // bedava sure asildiysa eklenen ucret
@@ -35,54 +35,53 @@ public class FaturaliHat extends Hat {
         return ekUcret;
     }
 
-    // arama yapiyoruz, bedava sureyi gecirsek ek ucret isliyor
+    // Hat'tan gelen abstract metodu implement etmek zorundayiz
+    public void AramaYap() {
+        System.out.println("Lutfen aranan numara ve sure bilgisi girin.");
+    }
+
+    // parametreli gercek arama yapma metodu
     public void AramaYap(String arananNumara, int konusmaSuresi) {
-        // simdilik kullanilmis toplam sureyi hesapliyoruz
+        // simdiye kadar kullanilan toplam sureyi hesaplıyoruz
         int toplamKullanilanSure = 0;
         for (int i = 0; i < getYapilanAramalar().size(); i++) {
             toplamKullanilanSure += getYapilanAramalar().get(i).getAramaSuresi();
         }
 
-        // bu aramadan onceki toplam + bu aramanin suresi
         int yeniToplam = toplamKullanilanSure + konusmaSuresi;
 
         // bedava sureyi astıysak ek ucret hesaplıyoruz
         if (yeniToplam > bedavaSure) {
-            // sadece bedava sureyi gecen kisim ucretlendiriliyor
             int asilanSure = 0;
             if (toplamKullanilanSure < bedavaSure) {
-                // kısmen bedava sure icinde kısmen disinda
+                // bu aramayla birlikte sınırı astık
                 asilanSure = yeniToplam - bedavaSure;
             } else {
                 // zaten bedava sure dolmustu, tum konusma ucretli
                 asilanSure = konusmaSuresi;
             }
-            // her 60 saniye icin 2 TL ek ucret
+            // her 60 saniye icin 2 TL ekliyoruz
             ekUcret += (asilanSure / 60) * 2.0;
         }
 
-        // aramayi listeye ekliyoruz
-        String bugun = java.time.LocalDate.now().toString();
-        Konusma yeniKonusma = new Konusma(getTelefonNumarasi(), arananNumara, konusmaSuresi, bugun);
+        Konusma yeniKonusma = new Konusma(getTelefonNumarasi(), arananNumara, konusmaSuresi);
         getYapilanAramalar().add(yeniKonusma);
     }
 
-    // gelen aramayı listeye kaydediyoruz
+    // Hat'tan gelen abstract metodu implement etmek zorundayiz
+    public void GelenArama() {
+        System.out.println("Lutfen arayan numara ve sure bilgisi girin.");
+    }
+
+    // parametreli gelen arama kaydetme metodu
     public void GelenArama(String arayanNumara, int konusmaSuresi) {
-        String bugun = java.time.LocalDate.now().toString();
-        Konusma gelenKonusma = new Konusma(arayanNumara, getTelefonNumarasi(), konusmaSuresi, bugun);
+        Konusma gelenKonusma = new Konusma(arayanNumara, getTelefonNumarasi(), konusmaSuresi);
         getGelenAramalar().add(gelenKonusma);
     }
 
-    // sabit fatura + varsa ek ucret toplamı buluyoruz
+    // sabit fatura + ek ucret toplamini hesaplıyoruz
     public double FaturaHesapla() {
         return faturaTutari + ekUcret;
-    }
-
-    // faturali hatları fatura tutarına gore karsilastırıyoruz
-    public int compareTo(Object o) {
-        FaturaliHat digerHat = (FaturaliHat) o;
-        return (int)(this.FaturaHesapla() - digerHat.FaturaHesapla());
     }
 
     public String toString() {

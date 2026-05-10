@@ -1,16 +1,14 @@
 public class Konusma implements Comparable {
 
-    // konusmanin bilgilerini tutuyoruz
+    // arayan aranan numara ve konusma suresi bilgileri
     private String arayanNumara;
     private String arananNumara;
     private int aramaSuresi; // saniye cinsinden
-    private String konusmaTarihi;
 
-    public Konusma(String arayanNumara, String arananNumara, int aramaSuresi, String konusmaTarihi) {
+    public Konusma(String arayanNumara, String arananNumara, int aramaSuresi) {
         this.arayanNumara = arayanNumara;
         this.arananNumara = arananNumara;
         this.aramaSuresi = aramaSuresi;
-        this.konusmaTarihi = konusmaTarihi;
     }
 
     // getter ve setter metodlari
@@ -38,21 +36,13 @@ public class Konusma implements Comparable {
         this.aramaSuresi = aramaSuresi;
     }
 
-    public String getKonusmaTarihi() {
-        return konusmaTarihi;
-    }
-
-    public void setKonusmaTarihi(String konusmaTarihi) {
-        this.konusmaTarihi = konusmaTarihi;
-    }
-
-    // arayan, aranan ve sure bilgisini yazdiriyoruz
+    // arayan aranan ve sure bilgisini string olarak donuyoruz
     public String toString() {
         return "Arayan: " + arayanNumara + " | Aranan: " + arananNumara
-                + " | Sure: " + aramaSuresi + " saniye | Tarih: " + konusmaTarihi;
+                + " | Sure: " + aramaSuresi + " saniye";
     }
 
-    // konusmalari sureye gore karsilastiriyoruz, buyuk sure buyuk demek
+    // suresi uzun olan konusma daha buyuktur
     public int compareTo(Object o) {
         Konusma digerKonusma = (Konusma) o;
         return this.aramaSuresi - digerKonusma.aramaSuresi;

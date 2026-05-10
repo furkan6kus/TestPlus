@@ -1,17 +1,16 @@
 import java.util.ArrayList;
 
-public abstract class Hat implements Comparable {
+public abstract class Hat {
 
-    // her hatin bir numarasi ve aramalari olmali
+    // hatta ait numara ve arama listeleri
     private String telefonNumarasi;
     private ArrayList<Konusma> gelenAramalar;
     private ArrayList<Konusma> yapilanAramalar;
 
     public Hat(String telefonNumarasi) {
         this.telefonNumarasi = telefonNumarasi;
-        // listeleri basta bos olarak olusturuyoruz
-        this.gelenAramalar = new ArrayList<Konusma>();
-        this.yapilanAramalar = new ArrayList<Konusma>();
+        gelenAramalar = new ArrayList<Konusma>();
+        yapilanAramalar = new ArrayList<Konusma>();
     }
 
     // getter ve setter metodlari
@@ -31,17 +30,16 @@ public abstract class Hat implements Comparable {
         return yapilanAramalar;
     }
 
-    // alt siniflar kendi arama yapma mantıgını yazacak
-    public abstract void AramaYap(String arananNumara, int konusmaSuresi);
-
-    // gelen aramayı kaydetmek icin
-    public abstract void GelenArama(String arayanNumara, int konusmaSuresi);
-
     public String toString() {
         return "Telefon Numarasi: " + telefonNumarasi;
     }
 
-    // hem gelen hem giden aramalara bakarak en uzun konusmayı buluyoruz
+    // alt siniflar kendi arama mantıgını implement edecek
+    public abstract void AramaYap();
+
+    public abstract void GelenArama();
+
+    // gelen ve yapilan aramalarin hepsine bakip en uzun sureliyi buluyoruz
     public Konusma EnUzunKonusma() {
         Konusma enUzun = null;
 
@@ -62,14 +60,13 @@ public abstract class Hat implements Comparable {
         return enUzun;
     }
 
-    // her numaranin kac kez arandıgını sayıp siklığa gore siralıyoruz
+    // tum aramalardaki numaraları sayıp siklığa gore buyukten kucuge sıralıyoruz
     public ArrayList<String> AramaSikliginaGoreSirala() {
 
-        // hangi numara kac kez aramis ya da aranmis sayıyoruz
         ArrayList<String> numaralar = new ArrayList<String>();
         ArrayList<Integer> sayilar = new ArrayList<Integer>();
 
-        // yapilan aramalardaki numaraları kontrol ediyoruz
+        // yapilan aramalardaki karsi numaraları sayıyoruz
         for (int i = 0; i < yapilanAramalar.size(); i++) {
             String numara = yapilanAramalar.get(i).getArananNumara();
             int index = numaralar.indexOf(numara);
@@ -81,7 +78,7 @@ public abstract class Hat implements Comparable {
             }
         }
 
-        // gelen aramalardaki numaraları da sayıyoruz
+        // gelen aramalardaki karsi numaraları da sayıyoruz
         for (int i = 0; i < gelenAramalar.size(); i++) {
             String numara = gelenAramalar.get(i).getArayanNumara();
             int index = numaralar.indexOf(numara);
@@ -93,8 +90,8 @@ public abstract class Hat implements Comparable {
             }
         }
 
-        // bubble sort ile siklıga gore buyukten kucuge siralıyoruz
-        // esit siklıkta buyuk numara once gelmeli
+        // bubble sort ile sıklığa gore buyukten kucuge sıralıyoruz
+        // sıklık esitse buyuk numara once gelmeli
         for (int i = 0; i < numaralar.size() - 1; i++) {
             for (int j = i + 1; j < numaralar.size(); j++) {
                 boolean degistir = false;
@@ -102,7 +99,6 @@ public abstract class Hat implements Comparable {
                 if (sayilar.get(i) < sayilar.get(j)) {
                     degistir = true;
                 } else if (sayilar.get(i).equals(sayilar.get(j))) {
-                    // siklıklar esitse numerik olarak buyuk olan once gelmeli
                     if (numaralar.get(i).compareTo(numaralar.get(j)) < 0) {
                         degistir = true;
                     }

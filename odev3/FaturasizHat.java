@@ -2,30 +2,35 @@ import java.util.ArrayList;
 
 public class FaturasizHat extends Hat {
 
-    // faturasiz hatta sadece bakiye var
-    private double bakiye;
+    // faturasiz hatta mevcut bakiye tutulur
+    private int bakiye;
 
-    public FaturasizHat(String numara, double bakiye) {
+    public FaturasizHat(String numara, int Bakiye) {
         super(numara);
-        this.bakiye = bakiye;
+        this.bakiye = Bakiye;
     }
 
     // getter ve setter metodlari
-    public double getBakiye() {
+    public int getBakiye() {
         return bakiye;
     }
 
-    public void setBakiye(double bakiye) {
+    public void setBakiye(int bakiye) {
         this.bakiye = bakiye;
     }
 
-    // bakiye yukle metodu, parametre kadar bakiye ekliyoruz
-    public void BakiyeYukle(double yuklenecekTutar) {
+    // bakiye yukleme metodu, gelen tutarı mevcut bakiyeye ekliyoruz
+    public void BakiyeYukle(int yuklenecekTutar) {
         bakiye += yuklenecekTutar;
         System.out.println(yuklenecekTutar + " TL yuklendi. Mevcut bakiye: " + bakiye + " TL");
     }
 
-    // arama yapiyoruz, saniyesi 0.05 TL, bakiye bitince konusma bitiyor
+    // Hat'tan gelen abstract metodu implement etmek zorundayiz
+    public void AramaYap() {
+        System.out.println("Lutfen aranan numara ve sure bilgisi girin.");
+    }
+
+    // parametreli arama yapma metodu, saniyesi 0.05 TL, bakiye bitince konusma kesilir
     public void AramaYap(String arananNumara, int konusmaSuresi) {
         // hic bakiye yoksa arama yapamayiz
         if (bakiye <= 0) {
@@ -33,41 +38,36 @@ public class FaturasizHat extends Hat {
             return;
         }
 
-        // bakiyeyle kac saniye konusabiliriz hesaplıyoruz
+        // bakiyeyle en fazla kac saniye konusabiliriz hesaplıyoruz
+        // 0.05 TL/saniye, yani 1 TL = 20 saniye
         int maksimumSure = (int) (bakiye / 0.05);
 
-        // istenen sure bakiyeden fazlaysa kısaltıyoruz
         int gercekSure = konusmaSuresi;
         if (konusmaSuresi > maksimumSure) {
+            // bakiye yetersiz, sure kısalıyor
             gercekSure = maksimumSure;
-            System.out.println("Bakiye yetersiz oldugundan konusma " + gercekSure + " saniyede kesildi.");
+            System.out.println("Bakiye yetersiz, konusma " + gercekSure + " saniyede kesildi.");
         }
 
-        // kullanilan bakiyeyi dusuyoruz
-        double harcananBakiye = gercekSure * 0.05;
-        bakiye -= harcananBakiye;
+        // harcanan bakiyeyi dusuyoruz
+        double harcananTutar = gercekSure * 0.05;
+        bakiye -= (int) harcananTutar;
 
-        // aramayi listeye ekliyoruz
-        String bugun = java.time.LocalDate.now().toString();
-        Konusma yeniKonusma = new Konusma(getTelefonNumarasi(), arananNumara, gercekSure, bugun);
+        Konusma yeniKonusma = new Konusma(getTelefonNumarasi(), arananNumara, gercekSure);
         getYapilanAramalar().add(yeniKonusma);
 
-        System.out.println("Arama tamamlandi. " + harcananBakiye + " TL harcandi. Kalan bakiye: " + bakiye + " TL");
+        System.out.println("Arama tamamlandi. Kalan bakiye: " + bakiye + " TL");
     }
 
-    // gelen aramayı kayıt ediyoruz, ucretsiz
-    public void GelenArama(String arayanNumara, int konusmaSuresi) {
-        String bugun = java.time.LocalDate.now().toString();
-        Konusma gelenKonusma = new Konusma(arayanNumara, getTelefonNumarasi(), konusmaSuresi, bugun);
+    // Hat'tan gelen abstract metodu implement etmek zorundayiz
+    public void GelenArama() {
+        System.out.println("Lutfen arayan numara ve sure bilgisi girin.");
+    }
+
+    // gelen aramaları kaydeden metod (hocamın verdigi isimle bırakıyoruz)
+    public void GelenAramaGelenArama(String arayanNumara, int konusmaSuresi) {
+        Konusma gelenKonusma = new Konusma(arayanNumara, getTelefonNumarasi(), konusmaSuresi);
         getGelenAramalar().add(gelenKonusma);
-    }
-
-    // faturasiz hatları bakiyeye gore karsilastırıyoruz
-    public int compareTo(Object o) {
-        FaturasizHat digerHat = (FaturasizHat) o;
-        if (this.bakiye > digerHat.bakiye) return 1;
-        else if (this.bakiye < digerHat.bakiye) return -1;
-        return 0;
     }
 
     public String toString() {
